@@ -79,6 +79,7 @@ export const idlFactory = ({ IDL }) => {
     'pooled_target_delta' : IDL.Opt(PooledTargetDelta),
     'in_transit_backing_e8s' : IDL.Opt(IDL.Nat),
     'pooled_target_e8s' : IDL.Opt(IDL.Nat),
+    'live_child_net_backing_e8s' : IDL.Opt(IDL.Nat),
     'total_io_supply_e8s' : IDL.Opt(IDL.Nat),
     'liquid_claim_backing_e8s' : IDL.Opt(IDL.Nat),
     'active_reward_io_e8s' : IDL.Opt(IDL.Nat),
@@ -87,7 +88,6 @@ export const idlFactory = ({ IDL }) => {
     'generation' : IDL.Nat64,
     'protocol_reserve_io_e8s' : IDL.Opt(IDL.Nat),
     'permanent_productive_capital_e8s' : IDL.Opt(IDL.Nat),
-    'live_child_net_backing_e8s' : IDL.Opt(IDL.Nat),
     'claim_rate' : IDL.Opt(ClaimRateSnapshot),
     'nonredeemable_governance_io_e8s' : IDL.Opt(IDL.Nat),
     'observed_at_timestamp_nanos' : IDL.Opt(IDL.Nat64),
@@ -119,15 +119,15 @@ export const idlFactory = ({ IDL }) => {
   });
   const NnsManagerStatus = IDL.Record({
     'active_operation' : IDL.Opt(IDL.Text),
-    'latest_started_two_week_generation' : IDL.Nat64,
-    'live_child_physical_principal_e8s' : IDL.Nat,
     'live_child_net_backing_e8s' : IDL.Nat,
-    'live_child_committed_fee_liability_e8s' : IDL.Nat,
+    'latest_started_two_week_generation' : IDL.Nat64,
     'latest_completed_two_week_generation' : IDL.Nat64,
+    'live_child_committed_fee_liability_e8s' : IDL.Nat,
+    'live_child_physical_principal_e8s' : IDL.Nat,
     'observed_at_timestamp_nanos' : IDL.Nat64,
     'lifecycle' : Lifecycle,
-    'two_week_maturity_baseline_reconciled' : IDL.Bool,
     'latest_pooled_target' : IDL.Opt(PooledTargetObservation),
+    'permanent_maturity_baseline_reconciled' : IDL.Bool,
   });
   const ReconciliationProjection = IDL.Record({
     'pooled_target_e8s' : IDL.Nat,

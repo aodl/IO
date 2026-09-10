@@ -94,7 +94,18 @@ For every release lineage, obtain the source-finalization identity from the
 machine-readable manifest and prove the artifact-recording commit is its
 immediate artifact-only child. Integration must preserve both commit identities.
 Later evidence/documentation-tail commits select current evidence and record
-readiness; they are not artifact-recording commits.
+readiness; they are not artifact-recording commits. The selected evidence commit
+also closes that historical release lineage. A later commit that changes source
+starts development toward another release rather than extending the completed
+release's evidence-only tail. The checked-in and worktree `release-artifacts/**`
+set must continue to equal the tree at the selected artifact-recording commit;
+a later self-consistent replacement is historical release corruption, not
+development ahead. Development CI verifies the completed prefix and reports
+newer source as development ahead; `verify_artifacts` and
+`verify_release` remain strict and require a fresh source-finalization,
+artifact-recording commit, and selected evidence package before that newer
+source is release-bound. A forbidden source change before the selected evidence
+commit remains an invalid release-tail mutation.
 Pull-request jobs check out the PR head directly and require the PR base commit
 to be an ancestor of that head. After every required workflow passes on the
 exact final release-tail head and explicit authorization is given, integration

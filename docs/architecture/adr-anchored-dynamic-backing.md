@@ -3,6 +3,7 @@
 - Status: accepted Tranche-A replacement architecture
 - Date: 2026-08-30
 - Source baseline: `b0f85cfd87b7e43989346f8780bb02a7f197526d`
+- Redemption transport superseded by: `adr-semantic-redemption-staging.md`
 
 ## Authoritative invariants
 
@@ -26,10 +27,11 @@ the test-only `io-proposed-economics-tests` model.
 5. **Synchronization with economic fail-safe.** Healthy scheduling targets
    liquid claim backing before SNS unlock. Arbitrary distributed liveness is
    not assigned a finite bound. Delayed backing stays exactly in `B`, and an
-   exact pushed redemption becomes a durable at-most-once payout obligation.
-6. **Push-redemption solvency.** Preparation creates no debt. A timely exact
-   push creates an unconditional durable obligation which survives expiry,
-   restart, and upgrade; monotone claim rate keeps its frozen quote solvent.
+   a staged redemption remains claim-bearing until whole-gross liquidity permits
+   an exact at-most-once payout.
+6. **Staging-redemption solvency.** Staging creates no debt. Canonical proof,
+   current coherent economics, matching fees, and sufficient liquidity precede
+   the payout intent; payout and reserve sweep survive restart and upgrade.
 7. **Dust tolerance.** Unsolicited ICP cannot block bootstrap, alter `B` or
    `C`, enlarge anchor entitlement, issue IO, or prove an expected transfer.
 8. **Exact partition.** At stable boundaries, physical Dynamic principal is
@@ -65,11 +67,11 @@ records for their own source. They do not define this replacement.
 | Split, child, and disbursement | NNS `unwind_flow`; `io-nns-types::{pool,backing}` | Retain sticky exact commands/proofs. Consume Split and committed future-disbursement fee capacity once at the sticky boundary. |
 | SNS timing/eligibility | Separate core-model constants; governance/reward boundaries; Stream scheduler | NNS delay is 1,209,600 seconds and SNS user delay is 1,296,060 seconds after the 12-hour timing proof. |
 | Cohort lifecycle | NNS stable state/API; `MAX_LIVE_UNWIND_COHORTS`; `CapacityPending` | Delete the product cap/variant. Retain one aggregate child per generation and prioritize ready-child service before another Split. |
-| Redemption | Stream state/API/redemption; ledger boundary/types | Replace allowance, pull intent, and `transfer_from` with prepared ICRC-1 push proof and a durable payout obligation. Retain bounded caller nonce/replay. |
-| Frontend redemption | `frontend/web/src/app/redemption.js` and redemption UI/tests | Replace approval/allowance UX with prepare, explicit push, block settlement, and resume. |
-| Historian/status | Historian raw adapters/model/DID and frontend projection | Retain layered observation; add anchor partition, deficits, push obligation, and cohort-priority representations only where operationally necessary. |
-| Stable schemas | Stream marker 10; NNS marker 13; strict launch fixtures | The replacement encoded shapes reject markers 9/12 without migration. |
-| Bootstrap/rehearsal tooling | install args, production wiring, local SNS runbook/evidence validators | Replace lazy-parent fixtures and pull-redemption phases with preseeded anchor, dust, push, replenishment, timing, and >32 historical-generation evidence. |
+| Redemption | Stream state/API/redemption; ledger boundary/types | Use one claim-bearing semantic staging Account, bounded index discovery, canonical block proof, fresh current quote/liquidity admission, exact payout, and exact reserve sweep. |
+| Frontend redemption | `frontend/web/src/app/redemption.js` and redemption UI/tests | Use one ordinary staging transfer and an optional no-argument worker prompt. |
+| Historian/status | Historian raw adapters/model/DID and frontend projection | Retain layered observation and anchor partition; report claim supply/rate unavailable during an active two-ledger redemption settlement. |
+| Stable schemas | Stream marker 13; NNS marker 13; strict launch fixtures | The replacement encoded shapes reject Stream marker 12 and NNS marker 12 without migration. |
+| Bootstrap/rehearsal tooling | install args, production wiring, local SNS runbook/evidence validators | Retain preseeded anchor, dust, replenishment, timing, natural-generation, and semantic-staging evidence. |
 | Normative documentation | pooled-backing, fees, maturity, scheduler, redemption, readiness docs | Mark superseded decisions explicitly. Preserve historical package descriptions. |
 
 No second production architecture is permitted. Deletion occurs in the same
@@ -118,7 +120,7 @@ capital.
 The anchor target and maximum replenishment entitlement are both exactly 10
 ICP. `anchor_available_e8s` is the only required fee-capacity scalar and is
 always in `0..=1_000_000_000`. No permanent fee liability, per-fee journal,
-donor provenance, per-user child accounting, generic queue, scanner, second
+donor provenance, per-user child accounting, generic queue, generic scanner, second
 monetary slot, or second scheduler is introduced.
 
 All realised maturity of the Dynamic neuron follows the ordinary pooled /
@@ -167,17 +169,17 @@ The selected scheduler makes normal SNS unlock later than structural
 detection, reconciliation, Split, accepted StartDissolving, the exact NNS
 delay, prioritized principal return, and the deterministic stress allowance.
 No finite bound is claimed for arbitrary distributed failure. In that degraded
-case all backing remains represented in `B`; a proved push creates a durable
-payout obligation which completes at most once when liquidity is canonical.
+case all backing remains represented in `B`; staged IO remains represented in
+`C` until canonical liquidity permits payout.
 
-### F. Push-redemption solvency
+### F. Staging-redemption solvency
 
-Preparation creates neither a reservation nor an obligation. Exact proof of a
-timely push simultaneously excludes the redeemed claim from `C`, removes its
-frozen gross payout from `B`, and creates an equal excluded durable payout
-obligation. The ledger makes aggregate pushed principal no greater than the
-then-outstanding claim supply. Monotone rates make every frozen earlier quote
-no greater than its later fair value. A block and intent can settle once.
+The staging transfer creates neither a reservation nor an obligation and does
+not reduce `C`. Exact block proof and whole-gross liquidity precede the fresh
+quote and immutable payout intent. Payout proof simultaneously removes frozen
+gross from `B` and staged principal from economic `C`. The exact reserve sweep
+then replaces the temporary exclusion through fee burn plus reserve credit.
+A source block, payout intent, and sweep intent each take effect at most once.
 
 ### G. Dust tolerance
 
@@ -261,24 +263,15 @@ plan freezes the then-current anchor deficit. After that boundary, only the
 frozen `ordinary.claim_credit` contributes to `T`; the transition therefore
 never removes a speculative full-capture claim estimate from backing.
 
-## Prepared push pricing proof
+## Semantic staging pricing proof
 
-For a preparation at rate `r0 = B0/C0`, its gross quote is
-`q = floor(x * B0 / C0)`. Invariant B gives every later pre-push rate
-`r1 >= r0`, so `q <= floor(x * r1)`: the frozen quote cannot overpay relative
-to the later fair rate.
-
-For independently prepared pushes, ledger conservation limits the sum of
-accepted pushed principal to the claim-bearing IO held by those sources. At
-each exact push proof, the frozen gross is removed from claim backing and moved
-to an excluded payout obligation. Sequential application of the monotone quote
-inequality keeps total obligations within the backing surrendered by the
-corresponding claims. The same ledger block and deterministic intent cannot be
-accepted twice.
-
-Expiry governs the transfer's canonical creation time, not settlement-call
-time. A timely transfer remains settleable after expiry. An actually late or
-otherwise unmatched transfer is unsupported and does not create an obligation.
+After staging, the actual current state supplies `r = B/C` and
+`q = floor(x * B / C)`. The staging transfer fee is already reflected in total
+supply and is not reconstructed. If liquidity is unavailable, `x` remains in
+`C`; claim-rate monotonicity ensures a later quote is no worse. After payout,
+`B' = B-q` and `C' = C-x`, and exact cross multiplication proves the rate does
+not decline under integer-floor semantics. Sweep conservation leaves that
+post-payout `C'` unchanged.
 
 ## Current scheduler timing graph
 
@@ -418,10 +411,8 @@ daily reward margin is not, because reward processing is independent.
 
 No finite scheduler proves arbitrary IC/network completion. If recovery runs
 beyond SNS unlock, the child/transit value remains exactly in `U`/`T`, claim
-rate does not fall, and a timely exact IO push creates an immutable owed payout.
-The obligation waits for canonical Stream liquidity and completes at most once
-after child recovery. That is an exceptional safety state, not ordinary
-pre-redemption liquidity gating.
+rate does not fall, and staged IO remains claim-bearing until canonical Stream
+liquidity permits a fresh payout. There is no pre-liquidity payout debt.
 
 ## Implementation consequences
 
@@ -429,10 +420,10 @@ Source work proceeds as one replacement:
 
 - NNS state retains mandatory Dynamic identity, anchor availability, and
   accounted claim principal while deleting the obsolete fee liability; Stream
-  retains exact prepared-push and payout-obligation state.
+  retains exact staged payout/sweep state.
 - strict pre-launch schema markers are bumped and prior markers rejected;
 - ready-child priority replaces capacity behavior;
-- normal pre-push liquidity gating is deleted; post-push missing liquidity is a
-  durable invariant-breach obligation;
+- normal illiquidity leaves a staged candidate claim-bearing without an active
+  payout operation or debt;
 - one active monetary operation slot per manager, one earliest-deadline timer
   per manager, exact semantic maturity Accounts, and canonical replay remain.

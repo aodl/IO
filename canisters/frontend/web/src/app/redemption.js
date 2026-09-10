@@ -1,4 +1,4 @@
-const REDEEM_LIFETIME_NANOS = 120_000_000_000n;
+const MAX_U128 = (1n << 128n) - 1n;
 
 export function canonicalSubaccount(value) {
   if (!(value instanceof Uint8Array) || value.length !== 32) {
@@ -7,80 +7,114 @@ export function canonicalSubaccount(value) {
   return new Uint8Array(value);
 }
 
-export function progressLabel(progress) {
-  const key = Object.keys(progress ?? {})[0];
-  return ({
-    Pending: "Payout owed — waiting for exact recovery",
-    Completed: "Completed",
-    Stuck: "Stuck — submit the exact payout block proof",
-  })[key] ?? key ?? "Unknown";
+function e8s(value, field) {
+  let parsed;
+  try {
+    parsed = typeof value === "bigint" ? value : BigInt(value);
+  } catch {
+    throw new Error(`${field} must be a positive integer`);
+  }
+  if (parsed <= 0n || parsed > MAX_U128) {
+    throw new Error(`${field} must be a positive integer within the protocol bound`);
+  }
+  return parsed;
 }
 
-export async function prepareRedemption({
+function duplicateBlock(error) {
+  const duplicate = error?.Duplicate ?? error?.duplicate;
+  const block = duplicate?.duplicate_of ?? duplicate?.duplicateOf ?? duplicate;
+  return block == null ? null : BigInt(block);
+}
+
+function unknownTransfer(cause) {
+  const error = new Error(
+    "The transfer outcome is unknown. It may have succeeded. Check wallet or ledger history before submitting another redemption.",
+  );
+  error.cause = cause;
+  error.transferOutcomeUnknown = true;
+  return error;
+}
+
+export function redemptionConsentTerms({ amount, sourceSubaccount, staging, ioFee, minimum }, network) {
+  return Object.freeze({
+    action: "icrc1_transfer_to_io_redemption_staging",
+    network,
+    ioAmountE8s: BigInt(amount),
+    minimumRedemptionIoE8s: BigInt(minimum),
+    sourceSubaccount: canonicalSubaccount(sourceSubaccount),
+    stagingDestination: staging,
+    ioTransferFeeE8s: BigInt(ioFee),
+    quoteStatus: "indicative_until_stream_accepts_staged_transfer",
+    finalPayoutFeePolicy: "canonical_icp_fee_is_subtracted_from_frozen_gross",
+    delayedProcessingPolicy: "staged_io_remains_claim_bearing_until_icp_payout_succeeds",
+  });
+}
+
+export async function consentStageAndProcessRedemption({
   ledger,
   stream,
   selectedSubaccount,
   ioAmountE8s,
-  minIcpOutE8s,
-  maxIcpFeeE8s,
-  nowNanos,
+  session,
+  nowNanos = () => BigInt(Date.now()) * 1_000_000n,
 }) {
-  const subaccount = canonicalSubaccount(selectedSubaccount);
-  const [fee, callerState] = await Promise.all([
+  const sourceSubaccount = canonicalSubaccount(selectedSubaccount);
+  const amount = e8s(ioAmountE8s, "redemption amount");
+  const owner = session?.identity?.getPrincipal?.();
+  if (!owner) throw new Error("wallet identity is unavailable");
+  const sourceAccount = { owner, subaccount: [sourceSubaccount] };
+  const [ioFeeValue, staging, minimumValue, balanceValue] = await Promise.all([
     ledger.icrc1_fee(),
-    stream.get_caller_redemption_state(),
+    stream.get_redemption_staging_account(),
+    stream.get_minimum_redemption_io_e8s(),
+    ledger.icrc1_balance_of(sourceAccount),
   ]);
-  if (!("Ok" in callerState)) {
-    throw new Error(`nonce query failed: ${JSON.stringify(callerState.Err)}`);
+  const ioFee = e8s(ioFeeValue, "IO fee");
+  const minimum = e8s(minimumValue, "minimum redemption");
+  const balance = BigInt(balanceValue);
+  if (amount < minimum) {
+    throw new Error(`redemption amount is below the configured minimum of ${minimum} e8s`);
   }
-  const args = {
-    from_subaccount: [subaccount],
-    io_amount_e8s: BigInt(ioAmountE8s),
-    min_icp_out_e8s: BigInt(minIcpOutE8s),
-    max_io_fee_e8s: BigInt(fee),
-    max_icp_fee_e8s: BigInt(maxIcpFeeE8s),
-    expires_at_nanos: BigInt(nowNanos) + REDEEM_LIFETIME_NANOS,
-    nonce: BigInt(callerState.Ok.next_nonce),
-  };
-  const result = await stream.prepare_redemption(args);
-  if (!("Ok" in result)) throw new Error(`quote preparation failed: ${JSON.stringify(result.Err)}`);
-  return result.Ok;
-}
-
-export function redemptionConsentTerms(prepared, network) {
-  return Object.freeze({
-    action: "icrc1_push_for_io_redemption",
-    network,
-    ioAmountE8s: prepared.request.io_amount_e8s,
-    sourceSubaccount: canonicalSubaccount(prepared.account.subaccount[0]),
-    reserveDestination: prepared.reserve,
-    exactIoFeeE8s: prepared.snapshot.io_fee_e8s,
-    exactMemo: new Uint8Array(prepared.push_memo),
-    exactGrossIcpE8s: prepared.gross_icp_e8s,
-    exactNetIcpE8s: prepared.net_icp_e8s,
-    exactIcpFeeE8s: prepared.snapshot.icp_fee_e8s,
-    redemptionNonce: prepared.request.nonce,
-    transferExpiresAtNanos: prepared.request.expires_at_nanos,
-  });
-}
-
-export async function consentPushAndSettleRedemption({ ledger, stream, prepared, session }) {
+  if (amount + ioFee > balance) {
+    throw new Error("wallet balance is insufficient for the redemption amount and IO fee");
+  }
   const consent = await session.requestTransferConsent(
-    redemptionConsentTerms(prepared, session.network),
+    redemptionConsentTerms({ amount, sourceSubaccount, staging, ioFee, minimum }, session.network),
   );
   if (consent !== true) throw new Error("Wallet transfer consent was not granted");
-  const transfer = await ledger.icrc1_transfer({
-    from_subaccount: prepared.account.subaccount,
-    to: prepared.reserve,
-    amount: prepared.request.io_amount_e8s,
-    fee: [prepared.snapshot.io_fee_e8s],
-    memo: [prepared.push_memo],
-    created_at_time: [prepared.prepared_at_nanos],
-  });
-  if (!("Ok" in transfer)) throw new Error("ICRC-1 redemption push failed");
-  return stream.settle_redemption(transfer.Ok);
-}
 
-export async function resumeRedemption(stream, caller) {
-  return stream.resume_redemption(caller);
+  let transfer;
+  try {
+    transfer = await ledger.icrc1_transfer({
+      from_subaccount: [sourceSubaccount],
+      to: staging,
+      amount,
+      fee: [ioFee],
+      memo: [],
+      created_at_time: [e8s(nowNanos(), "created_at_time")],
+    });
+  } catch (cause) {
+    throw unknownTransfer(cause);
+  }
+  if (!transfer || typeof transfer !== "object" || !("Ok" in transfer || "Err" in transfer)) {
+    throw unknownTransfer(new Error("ledger returned an unrecognized transfer response"));
+  }
+  let transferBlock;
+  try {
+    transferBlock = "Ok" in transfer ? BigInt(transfer.Ok) : duplicateBlock(transfer.Err);
+  } catch (cause) {
+    throw unknownTransfer(cause);
+  }
+  if (transferBlock === null) {
+    throw new Error("IO was not staged: the ICRC-1 ledger rejected the transfer");
+  }
+
+  let wakeError = null;
+  try {
+    const result = await stream.process_redemptions();
+    if (result?.Err) wakeError = result.Err;
+  } catch (error) {
+    wakeError = error;
+  }
+  return { transferBlock, wakeError };
 }

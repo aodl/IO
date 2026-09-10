@@ -8,39 +8,54 @@ Pause through the reviewed governance command, preserve the exact active operati
 
 Inspect `get_status`, the caller-visible progress, the exact transfer intent and the canonical ledger block named by the operation. Historian output is observation only and cannot classify or complete monetary work.
 
-Caller-visible redemption progress is deliberately coarse: `Pending`,
-`Completed(result)`, or `Stuck(text)`. `get_status.operation_phase` supplies the
+Caller-visible redemption progress is deliberately coarse: `Idle`, `Pending`,
+`Completed`, or `Stuck(text)`. `process_redemptions()` returns only local wake
+acceptance. `get_status.operation_phase` supplies the
 diagnostic internal phase names below; those names are not a public workflow
-contract.
+contract. Permissionless wake admission is global, heap-only, and approximately
+once per ten seconds; callers cannot multiply admission by changing principals.
 
 ## Redemption phases
 
-- A caller's prepared intent freezes the source Account, IO principal and fee,
-  exact quote, expiry, nonce, redemption ID, and ICRC-1 memo. Preparation owns
-  no monetary slot and creates no payout debt.
-- The wallet performs the exact ICRC-1 push. Until the named ledger block is
-  proved, the prepared intent remains caller state rather than an active
-  monetary operation.
-- `PayoutOwed`: the exact timely push is proved, IO is in reserve, and the
-  immutable ICP payout is an unconditional durable obligation. Missing liquid
-  ICP is an invariant-recovery condition, never cancellation of the claim.
-- `PayoutSubmitted`: the immutable ICP payout was created at its first submission. Retry only the identical intent within its deduplication window.
-- `PayoutSucceeded`: the canonical payout block is persisted and conservative postconditions still require confirmation.
+- Before activation, a candidate block remains in the bounded staging service
+  queue. Its IO is claim-bearing. Index lag, fee drift, or insufficient liquid
+  ICP creates no payout intent or debt. Settlement is not FIFO: an illiquid
+  candidate is deferred behind other discovered candidates at coarse cadence.
+  Coarse discovery continues before service while the 64-block queue has room,
+  including through captured continuation pages. A completely full queue
+  deliberately backpressures newer discovery without advancing scanner
+  coverage or losing the claim-bearing staged transfer.
+- `PayoutSubmitted`: canonical staging proof, fresh coherent `B/C`, matching
+  fees, and whole-gross liquidity fixed an immutable ICP payout to the exact
+  source Account before the ledger call. Retry only the identical intent.
+- `SweepSubmitted`: canonical payout success fixed an immutable
+  staging-to-reserve transfer using the activation-time IO fee before the ledger
+  call. Retry or prove only this exact intent. Claim supply/rate are unavailable
+  while either redemption stage is active.
 - `Stuck`: automated retry is not safe. Keep Paused and prove the exact named block through the ledger's canonical current/archive interface or ship a reviewed forward fix.
 
-After the `PayoutSucceeded` postcondition is observed, the exact result, caller
-replacement state, and cleared Stream replacement state are fully validated.
-The caller replay record and active-operation clear are then written in one
-no-`await` message transition. There is no separate local completion phase; a
-trap rolls back both writes.
+After sweep proof, the physical supply burn plus reserve credit establishes the
+coherent post-redemption `C`. Active-operation clear and candidate removal
+commit together; ledger blocks remain the durable completion history.
 
 Never mark completion by assertion, change a payout destination, recreate an intent with a new timestamp, infer a user account from text, or attempt a global proof that a transfer is absent.
 
 ## Exact transfer proof
 
-For an IO redemption push, use the pinned SNS ledger current/archive transaction and require the prepared source Account, reserve destination, principal amount, fee, deterministic memo, creation window, and absence of a spender. For an ICP payout or receipt, use official `query_blocks` and exactly the archive callback returned for the requested block. Require the exact account identifiers, amount, fee, ICRC-1 memo/timestamp and no spender.
+For redemption intake, use the pinned SNS ledger current/archive transaction
+and require an ordinary transfer into the fixed staging Account, a valid source
+Account, positive supported amount, and non-consumption. Index history alone is
+never authority. For the ICP payout, reserve sweep, or receipt, exact-match the
+persisted intent through the canonical current/archive boundary, including
+accounts, amount, fee, memo, timestamp, and spender constraints.
 
 No proof of absence exists. If the exact effect cannot be proved, retain Paused and prepare a governance-reviewed upgrade.
+
+An upgrade with `PayoutSubmitted`, `SweepSubmitted`, or the corresponding Stuck
+state reopens Paused. Do not request ordinary readiness yet: resume the exact
+immutable transfer or prove its exact block as SNS Governance while Paused,
+confirm that the active operation cleared once, and only then request unpause.
+Successful readiness installs the normal reward and coarse redemption timers.
 
 ## Liquid receipts and rewards
 
@@ -60,7 +75,7 @@ per-flow bounded-work limit.
 
 ## NNS operations
 
-The NNS manager owns governance proof. Jupiter and two-week sending staging accounts each have their own bounded pre-funded fee float. Two-year maturity and ready unwind principal go directly to the stream liquid account and issue no IO. Never add a general fee ledger, staging account for direct flows, ledger scanner, or stream-side governance proof.
+The NNS manager owns governance proof. Jupiter and two-week sending staging accounts each have their own bounded pre-funded fee float. Two-year maturity and ready unwind principal go directly to the stream liquid account and issue no IO. Never add a general fee ledger, generic monetary scanner, or stream-side governance proof. The one Stream redemption scanner is restricted to its fixed semantic Account and requires canonical proof before value movement.
 
 New NNS work requires Ready after the zero-maturity baseline and exact target
 reconciliation. Post-upgrade remains Paused, while already immutable unwind,

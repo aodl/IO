@@ -27,6 +27,12 @@ async fn nat_call<A: candid::CandidType>(
 const NNS_SNAPSHOT_DRIFT: &str = "NNS claim-backing observation drifted across the canonical reads";
 
 pub async fn claim_snapshot(config: &StreamConfig) -> Result<ClaimSnapshot, String> {
+    if matches!(
+        crate::state::read().active_operation,
+        Some(crate::state::StreamOperation::Redemption(_))
+    ) {
+        return Err("monetary snapshot unavailable during redemption settlement".into());
+    }
     match claim_snapshot_once(config).await {
         Err(error) if error == NNS_SNAPSHOT_DRIFT => claim_snapshot_once(config).await,
         result => result,
@@ -65,6 +71,12 @@ async fn claim_snapshot_once(config: &StreamConfig) -> Result<ClaimSnapshot, Str
         .iter()
         .try_fold(0u128, |total, (_, balance)| total.checked_add(*balance))
         .ok_or("nonredeemable balance overflow")?;
+    if matches!(
+        stream_snapshot.active_operation,
+        Some(crate::state::StreamOperation::Redemption(_))
+    ) {
+        return Err("monetary snapshot unavailable during redemption settlement".into());
+    }
     let claim_supply_e8s = io_core_model::claim_supply(total_supply, reserve, &[excluded])
         .map_err(|error| format!("claim supply failed: {error:?}"))?;
     let stream_transit = stream_transit_backing(&stream_snapshot, &nns_before)?;

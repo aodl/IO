@@ -17,12 +17,22 @@ pub const TWO_YEAR_MATURITY_SUBACCOUNT: [u8; 32] = [
     0x44, 0x4d, 0xb3, 0x89, 0x65, 0x12, 0x38, 0x89, 0xf3, 0xca, 0xd6, 0xbc, 0x52, 0x1b, 0xa5, 0xa1,
 ];
 
+/// SHA-256("io-redemption-staging-v1").
+pub const REDEMPTION_STAGING_SUBACCOUNT: [u8; 32] = [
+    0xa1, 0xc0, 0x9f, 0x94, 0x67, 0x3b, 0x8e, 0xed, 0xed, 0x2c, 0xe0, 0x84, 0x80, 0x0b, 0xf2, 0xa9,
+    0x5b, 0xcb, 0xd3, 0xea, 0x34, 0x6b, 0x97, 0xb6, 0xc3, 0x77, 0x2c, 0xa5, 0x63, 0x0c, 0x5d, 0x87,
+];
+
 pub fn two_week_maturity_staging(owner: Principal) -> Account {
     semantic_account(owner, TWO_WEEK_MATURITY_SUBACCOUNT)
 }
 
 pub fn two_year_maturity_staging(owner: Principal) -> Account {
     semantic_account(owner, TWO_YEAR_MATURITY_SUBACCOUNT)
+}
+
+pub fn redemption_staging(owner: Principal) -> Account {
+    semantic_account(owner, REDEMPTION_STAGING_SUBACCOUNT)
 }
 
 fn semantic_account(owner: Principal, subaccount: [u8; 32]) -> Account {
@@ -109,10 +119,11 @@ mod tests {
     }
 
     #[test]
-    fn maturity_accounts_are_fixed_distinct_and_owned_by_the_manager() {
+    fn semantic_accounts_are_fixed_distinct_and_owned_by_their_manager() {
         let owner = Principal::from_slice(&[1]);
         let two_week = two_week_maturity_staging(owner);
         let two_year = two_year_maturity_staging(owner);
+        let redemption = redemption_staging(owner);
         assert_eq!(two_week.owner, owner);
         assert_eq!(two_year.owner, owner);
         assert_eq!(
@@ -123,6 +134,13 @@ mod tests {
             two_year.canonical().unwrap().subaccount,
             TWO_YEAR_MATURITY_SUBACCOUNT
         );
+        assert_eq!(redemption.owner, owner);
+        assert_eq!(
+            redemption.canonical().unwrap().subaccount,
+            REDEMPTION_STAGING_SUBACCOUNT
+        );
         assert_ne!(two_week, two_year);
+        assert_ne!(redemption, two_week);
+        assert_ne!(redemption, two_year);
     }
 }

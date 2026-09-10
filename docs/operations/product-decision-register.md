@@ -22,9 +22,9 @@ No production principal or economic quantity may be inferred from the determinis
 | Project copyright notice | Do not invent the legal owner/name. Apache-2.0 license text is already canonical. | No local substitute. | Optional NOTICE/header attribution | Product/legal decision; no protocol effect |
 
 The anchored replacement ADR supersedes Policy-A claim erosion, lazy parent
-bootstrap, shared SNS/NNS 14-day timing, the 32-cohort product limit, and ICRC-2
+bootstrap, shared SNS/NNS 14-day timing, the fixed child-cap product limit, and
 pull redemption. Retained frozen decisions include reserve-transfer issuance,
-`B/C` redemption, Jupiter/two-week paired 40/60, TwoYear no-IO issuance, daily
-reward policy, sticky irreversible-effect recovery, following/voting-power
+total-backing `B/C` redemption, Jupiter/two-week paired 40/60, anchor-first
+TwoYear no-IO issuance, canonical reward-event policy, sticky irreversible-effect recovery, following/voting-power
 maintenance, ambiguity proofs, zero native SNS reward rates, 86,400-second
 reward rounds, and zero SNS dissolve-delay/age bonuses.

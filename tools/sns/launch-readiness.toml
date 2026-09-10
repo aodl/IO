@@ -14,8 +14,8 @@ status = "incomplete"
 evidence = "tools/sns/sns_init.io.template.yaml exists and the maintained source-built SNS flow validates and consumes the local init. The absent optional dfx sns extension remains an upstream non-blocking tooling defect for this evidence path; final production SNS configuration review is incomplete."
 
 [local_sns_testing_rehearsal]
-status = "complete"
-evidence = "The schema-v2 canonical package deploy/local-sns-rehearsal/evidence/2026-09-03-270dcf3-anchored-dynamic completed official source-built SNS launch/wiring evidence, exact NNS proposal-143660 evidence, simplified anchored IO economics and scheduling, prepared-push redemption, restart-safe packaging, and committed-evidence validation. It is bound to source 270dcf3dc71fc8e7b63c3177b0e3f58fc9246b35, immediate artifact child dc548f555a808f59e6a6c69759cc41fbb7f1f54d, release manifest 6d666a69d3d74a30f45510a23facd2cbc6d0790043dbbea49f96874620428637, package manifest 023a8f10893f94e871012397d901d0e7e3632690b55269df123fd741f9b30f3c, and package SHA256SUMS 4ac11006cace6ef74a762fed9d8a4ff55cdfc5c619dc7d2df4156a265d8543c8. Earlier packages remain immutable historical evidence and were not rebound."
+status = "incomplete"
+evidence = "The immutable schema-v2 package deploy/local-sns-rehearsal/evidence/2026-09-03-270dcf3-anchored-dynamic remains evidence for source 270dcf3dc71fc8e7b63c3177b0e3f58fc9246b35 and its recorded artifacts. It predates semantic-staging redemption. Launch readiness requires a fresh authorized local package proving the fixed staging Account, bounded index discovery, canonical block proof, current-rate liquidity gating, exact payout and exact reserve sweep against this source. Historical package bytes were not rewritten or rebound."
 
 [mainnet_testflight]
 status = "incomplete"

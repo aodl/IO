@@ -29,10 +29,10 @@ Use locally controlled accounts from the official local SNS rehearsal. Record bl
 # reserve-to-user issuance rehearsal; use a unique durable timestamp
 dfx canister call --network local "$SNS_LEDGER" icrc1_transfer '(record { to = record { owner = principal "TODO_LOCAL_USER_PRINCIPAL"; subaccount = opt blob "TODO_32_BYTE_USER_SUBACCOUNT" }; amount = 100000000 : nat; fee = opt (10000 : nat); memo = opt blob "IO local issuance rehearsal"; from_subaccount = null; created_at_time = opt (TODO_LOCAL_CREATED_AT_TIME_NANOS_1 : nat64) })'
 
-# prepared user-to-reserve redemption push. Obtain the exact amount, reserve
-# subaccount, memo and created-at time from prepare_redemption; record the
-# returned ledger block and pass it to settle_redemption.
-dfx canister call --network local "$SNS_LEDGER" icrc1_transfer '(record { to = record { owner = principal "TODO_LOCAL_PROTOCOL_RESERVE_OWNER"; subaccount = opt blob "TODO_32_BYTE_PROTOCOL_RESERVE_SUBACCOUNT" }; amount = TODO_EXACT_PREPARED_IO_AMOUNT : nat; fee = opt (10000 : nat); memo = opt blob "TODO_EXACT_PREPARED_REDEMPTION_MEMO"; from_subaccount = opt blob "TODO_32_BYTE_USER_SUBACCOUNT"; created_at_time = opt (TODO_EXACT_PREPARED_AT_TIME_NANOS : nat64) })'
+# ordinary user-to-staging redemption transfer. Obtain the fixed Account from
+# get_redemption_staging_account; no special memo or caller-supplied block is required.
+dfx canister call --network local "$SNS_LEDGER" icrc1_transfer '(record { to = record { owner = principal "TODO_LOCAL_STREAM_MANAGER"; subaccount = opt blob "TODO_32_BYTE_REDEMPTION_STAGING_SUBACCOUNT" }; amount = TODO_REDEMPTION_IO_AMOUNT : nat; fee = opt (10000 : nat); memo = null; from_subaccount = opt blob "TODO_32_BYTE_USER_SUBACCOUNT"; created_at_time = null })'
+dfx canister call --network local "TODO_LOCAL_STREAM_MANAGER" process_redemptions '()'
 
 # bad-fee transfer
 dfx canister call --network local "$SNS_LEDGER" icrc1_transfer '(record { to = record { owner = principal "TODO_LOCAL_USER_PRINCIPAL"; subaccount = null }; amount = 100000000 : nat; fee = opt (1 : nat); memo = opt blob "IO local bad fee"; from_subaccount = null; created_at_time = opt (TODO_LOCAL_CREATED_AT_TIME_NANOS_BAD_FEE : nat64) })'

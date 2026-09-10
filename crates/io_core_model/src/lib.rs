@@ -124,13 +124,12 @@ pub fn claim_rate(state: EconomicState) -> Result<ClaimRate, EconomicsError> {
 pub fn redemption_quote(
     state: EconomicState,
     redeemed: u128,
-    io_fee: u128,
     payout_fee: u128,
 ) -> Result<RedemptionQuote, EconomicsError> {
     let ClaimRate::Ratio { backing, claims } = claim_rate(state)? else {
         return Err(EconomicsError::BackingWithoutClaims);
     };
-    if checked_add(redeemed, io_fee)? > claims {
+    if redeemed > claims {
         return Err(EconomicsError::RedemptionExceedsSupply);
     }
     let gross_icp = ratio(redeemed, backing, claims)?;
@@ -298,7 +297,7 @@ mod tests {
 
     #[test]
     fn redemption_uses_total_backing_without_a_pre_push_liquidity_gate() {
-        let quote = redemption_quote(state(100, 900, 500, 0), 100, 2, 10).unwrap();
+        let quote = redemption_quote(state(100, 900, 500, 0), 100, 10).unwrap();
         assert_eq!((quote.gross_icp, quote.net_icp), (200, 190));
     }
 

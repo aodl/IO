@@ -56,6 +56,9 @@ pub async fn protocol(
         reserve,
         nonredeemable: &nonredeemable,
         liquid,
+        redemption_in_progress: stream
+            .as_ref()
+            .is_none_or(|value| value.operation_kind.as_deref() == Some("Redemption")),
         reconciliation: stream
             .as_ref()
             .and_then(|value| value.latest_reconciliation_checkpoint.as_ref()),
@@ -589,7 +592,7 @@ mod tests {
         let encoded = encode_one(RawStreamStatus {
             lifecycle: Lifecycle::Ready,
             operation_kind: Some("Redemption".into()),
-            operation_phase: Some("PayoutSucceeded".into()),
+            operation_phase: Some("SweepSubmitted".into()),
             latest_entitlement_batch_generation: 0,
             latest_processed_reward_event: Some(RewardEventId {
                 end_timestamp_seconds: 123,
@@ -620,7 +623,7 @@ mod tests {
             })
         );
         assert_eq!(public.latest_reward_event_classification, None);
-        assert_eq!(public.operation_phase.as_deref(), Some("PayoutSucceeded"));
+        assert_eq!(public.operation_phase.as_deref(), Some("SweepSubmitted"));
         assert_eq!(public.observed_at_timestamp_nanos, 456);
     }
 }

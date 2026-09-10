@@ -22,6 +22,10 @@ changes.
 12. Replacement code must delete the replaced path.
 13. Every complexity exception requires an ADR and demonstrated need.
 
+A transfer into a fixed, purpose-specific semantic redemption staging Account
+is explicit intent encoded by Account topology. Index discovery of that Account
+is not generic transaction-intent inference.
+
 These rules are requirements, not aspirations. A replacement phase is incomplete
 while its old production monetary path remains reachable. Experimental branches
 are research records, not compatibility obligations.
@@ -50,6 +54,12 @@ ambiguity, delayed NNS maturity payout, one pending unwind child, coalesced targ
 updates, and the absence of automatic unsolicited-transfer refunds are intended
 properties. They are not incomplete work.
 
-Unsupported direct transfers create no protocol claim. Intentional ledger fee
+No generic monetary scanner is permitted. The only launch monetary discovery
+scanner is the bounded, account-filtered redemption staging scanner, and every
+discovered block requires canonical ledger proof before value movement.
+
+Unsupported transfers outside semantic redemption staging create no protocol claim.
+Tiny or unsupported staging deposits remain claim-bearing but create no payout
+or automatic refund. Intentional ledger fee
 changes use pause, drain, governance, configuration update, verification, and
 unpause. Launch value-moving canisters support only stable schema V1.

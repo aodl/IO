@@ -1,29 +1,31 @@
-# Prepared-push redemption frontend contract
+# Semantic-staging redemption frontend contract
 
-IO remains inert and not live. This is the required launch interaction, not an
-activation claim.
+The frontend is a convenience initiator, not a monetary authority or completion
+historian.
 
-1. Read the IO fee and caller replay/nonce state.
-2. Ask `prepare_redemption` for the exact source Account, reserve destination,
-   principal amount, IO/ICP fees, frozen gross/net quote, expiry, nonce,
-   redemption ID, and deterministic memo.
-3. Display the frozen quote and request affirmative wallet consent.
-4. Submit one wallet `icrc1_transfer` from the prepared subaccount to reserve
-   with the exact amount, fee, memo, and creation time.
-5. Capture its block index and call `settle_redemption` to exact-prove it.
-6. Display coarse `Pending`, `Completed`, or `Stuck`; expose permissionless
-   recovery without presenting internal durable phases as a compatibility API.
+1. Read the selected Account balance, canonical IO fee, configured minimum, and
+   fixed staging Account. Reject malformed, non-positive, over-bound,
+   below-minimum, or unfunded input before consent.
+2. Show explicit wallet consent for one ordinary ICRC-1 transfer from the
+   selected Account to staging.
+3. Submit once with the ledger fee, one `created_at_time`, and no special memo,
+   canister preparation, expiry, quote bound, allowance, or browser receipt
+   database.
+4. Treat `Ok` and an exact ledger `Duplicate` as staged. Call no-argument
+   `process_redemptions()` once as a best-effort, coalesced wake. A wake failure
+   cannot turn confirmed staging into transfer failure.
+5. On a transport exception, say that the transfer outcome is unknown and may
+   have succeeded. Do not retry. Direct the user to wallet or ledger history
+   before authorizing another redemption.
 
-Preparation performs no transfer and creates no ICP debt. A transfer made
-inside the preparation window may settle later. A transfer created after expiry
-or with the wrong source, destination, amount, fee, memo, or spender is not a
-redemption. Once the matching block is proved, the payout obligation cannot
-expire or disappear; unexpected missing liquidity becomes recoverable
-`PayoutOwed`, not cancellation or another requested IO push.
+A same-page `submitting` guard prevents accidental double clicks while consent
+or the ledger call is outstanding. There is no Check button, persistent browser
+receipt state, completion matching, automatic ambiguous retry, or completion
+recovery across reload. Automatic bounded backend discovery is the durable path
+for a staging transfer that committed.
 
-The ICP payout always returns to the same caller/subaccount. The UI does not
-offer an arbitrary destination, allowance, approval, spender, or pull mode.
-Arbitrary unsupported transfers are not recovered by a ledger scanner.
-
-Protocol history comes from the Historian. The UI discloses stale, missing, or
-incomplete sources and never feeds Historian balances into a monetary command.
+Any pre-transfer rate is indicative. Stream computes the final
+`floor(X * B / C)` gross only after canonical proof, a fresh coherent snapshot,
+matching configured fees, and whole-gross liquidity. Staged IO remains
+claim-bearing until settlement. Tiny and unsupported transfers create no payout
+or refund and do not block later candidates.

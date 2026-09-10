@@ -34,7 +34,7 @@ ln -s "${original_cargo_home}/registry" "${alternate_cargo_home}/registry"
 
 # Preserve the caller's complete artifact set before either exact-source build.
 cp -a "${io_root}/release-artifacts" "${checked_in}"
-cargo run -p xtask -- verify_artifacts
+cargo run -p xtask -- verify_completed_release
 
 echo "release reproducibility build A source root: ${short_source_root}"
 echo "release reproducibility build A Cargo home: ${original_cargo_home}"

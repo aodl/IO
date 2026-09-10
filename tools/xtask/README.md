@@ -52,7 +52,7 @@ With no command, xtask runs `test_all`.
 | --- | --- | --- |
 | `simplicity_check` | Enforce production-size, API, authority, and simplified-execution guardrails | Fast, static, no network |
 | `test_all` | Developer aggregate: preflight, unit/static checks, debug PocketIC path, local `icp` build, E2E, permissive security scan | Builds generated frontend/debug artifacts; PocketIC live tests skip when unavailable |
-| `test_ci` | Strict CI aggregate, including exact-source/artifact/evidence checks, required PocketIC/SNS paths, workspace tests, wasm32 check, and clippy | Requires `POCKET_IC_BIN`; heavy and serial |
+| `test_ci` | Development/PR CI aggregate, including completed-release integrity, required PocketIC/SNS paths, workspace tests, wasm32 check, and clippy | Requires `POCKET_IC_BIN`; heavy and serial; development may be ahead of the selected completed release |
 | `verify_release` | Release gate over APIs, pins, exact-source artifacts, wiring, stable storage, evidence, frontend, SNS, real-harness registration, and required security scan | Performs two exact-source release builds and frontend setup; does not deploy |
 | `preflight` | Workspace check plus Candid, NNS pin, and install-argument validation | Fast compile/static path |
 | `test_unit` | IO unit/static suites and test-registration guardrails | No required PocketIC server |
@@ -168,6 +168,7 @@ missing. Run all live/value-moving PocketIC profiles serially.
 
 | Command | Meaning |
 | --- | --- |
+| `verify_completed_release` | Verify the selected completed release, require its current artifacts to match the selected artifact-recording commit, and classify later source commits as development awaiting a fresh release binding |
 | `verify_artifacts` | Verify checked-in raw/gzip Wasm, sidecars, sizes, hashes, manifest source, and release lineage; does not generate |
 | `verify_recorded_source` | Preserve checked-in artifacts and compare them with two detached builds of the exact manifest source |
 | `build_recorded_source` | Build the exact manifest source through the supported detached-worktree script |

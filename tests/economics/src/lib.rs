@@ -2,8 +2,8 @@
 
 //! Executable architecture model for anchored dynamic backing.
 //!
-//! This crate is deliberately test-only. It proves the replacement accounting
-//! representation before the value-moving canisters adopt it.
+//! This crate is deliberately test-only. It exercises the accounting
+//! representation independently of the value-moving canisters.
 
 mod anchored_dynamic_backing {
     use std::cmp::Ordering;
@@ -13,7 +13,6 @@ mod anchored_dynamic_backing {
     const NNS_DYNAMIC_DISSOLVE_DELAY_SECONDS: u64 = 1_209_600;
     const PREFERRED_SNS_UNLOCK_DELAY_SECONDS: u64 = 1_296_060;
     const REWARD_CADENCE_SECONDS: u64 = 86_400;
-    const REWARD_MARGIN_SECONDS: u64 = 300;
     const RECOVERY_RETRY_SECONDS: u64 = 60;
     const STRUCTURAL_CADENCE_SECONDS: u64 = 43_200;
     const REVIEWED_MAX_NEURONS: u64 = 1_000;
@@ -29,13 +28,6 @@ mod anchored_dynamic_backing {
         io_balance_queries_per_day_at_max: u64,
         approximate_calls_per_day_at_max: u64,
         healthy_slack_seconds: u64,
-    }
-
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    struct SchedulerFacts {
-        latest_structural_at: u64,
-        latest_reward_event_end: u64,
-        retry_due_at: Option<u64>,
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,7 +64,6 @@ mod anchored_dynamic_backing {
         excluded_surplus: u128,
         dynamic_inflight_physical: u128,
         permanent_capital: u128,
-        payout_obligation: u128,
         staged_two_year_maturity: u128,
     }
 
@@ -85,7 +76,6 @@ mod anchored_dynamic_backing {
         InvalidRateFloor,
         RateDecrease,
         InvalidAmount,
-        LatePush,
         DuplicateProof,
     }
 
@@ -97,15 +87,6 @@ mod anchored_dynamic_backing {
         RedemptionQuote,
         External,
         IoLedgerBurn,
-    }
-
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    struct PreparedPush {
-        principal: u128,
-        gross_payout: u128,
-        prepared_at: u64,
-        expires_at: u64,
-        id: u128,
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -359,63 +340,31 @@ mod anchored_dynamic_backing {
             self.assert_transition(next)
         }
 
-        fn prepare_push(
+        fn redeem_staged(
             self,
+            source_block: u128,
             principal: u128,
-            now: u64,
-            lifetime: u64,
-            id: u128,
-        ) -> Result<PreparedPush, ModelError> {
-            if principal == 0 || principal > self.claims || lifetime == 0 {
+            payout_fee: u128,
+            proved_blocks: &mut Vec<u128>,
+        ) -> Result<(Self, u128, u128), ModelError> {
+            if principal == 0 || principal > self.claims {
                 return Err(ModelError::InvalidAmount);
             }
-            Ok(PreparedPush {
-                principal,
-                gross_payout: mul_div_floor(principal, self.backing.total()?, self.claims)?,
-                prepared_at: now,
-                expires_at: now.checked_add(lifetime).ok_or(ModelError::Overflow)?,
-                id,
-            })
-        }
-
-        fn prove_push(
-            self,
-            intent: PreparedPush,
-            transfer_created_at: u64,
-            io_fee: u128,
-            proved_ids: &mut Vec<u128>,
-        ) -> Result<Self, ModelError> {
-            if transfer_created_at < intent.prepared_at || transfer_created_at > intent.expires_at {
-                return Err(ModelError::LatePush);
-            }
-            if proved_ids.contains(&intent.id) {
+            if proved_blocks.contains(&source_block) {
                 return Err(ModelError::DuplicateProof);
             }
-            let claim_reduction = intent
-                .principal
-                .checked_add(io_fee)
-                .ok_or(ModelError::Overflow)?;
-            if self.claims < claim_reduction || self.backing.liquid < intent.gross_payout {
+            let gross = mul_div_floor(principal, self.backing.total()?, self.claims)?;
+            let net = gross
+                .checked_sub(payout_fee)
+                .ok_or(ModelError::InvalidAmount)?;
+            if self.backing.liquid < gross {
                 return Err(ModelError::InsufficientBacking);
             }
             let mut next = self;
-            next.claims -= claim_reduction;
-            next.backing.liquid -= intent.gross_payout;
-            next.payout_obligation = next
-                .payout_obligation
-                .checked_add(intent.gross_payout)
-                .ok_or(ModelError::Overflow)?;
-            proved_ids.push(intent.id);
-            self.assert_transition(next)
-        }
-
-        fn pay_obligation(self, gross: u128) -> Result<Self, ModelError> {
-            let mut next = self;
-            next.payout_obligation = next
-                .payout_obligation
-                .checked_sub(gross)
-                .ok_or(ModelError::InsufficientBacking)?;
-            self.assert_transition(next)
+            next.claims -= principal;
+            next.backing.liquid -= gross;
+            proved_blocks.push(source_block);
+            Ok((self.assert_transition(next)?, gross, net))
         }
     }
 
@@ -582,17 +531,6 @@ mod anchored_dynamic_backing {
                 * generations_per_day,
             healthy_slack_seconds,
         }
-    }
-
-    fn next_stream_deadline(facts: SchedulerFacts) -> u64 {
-        let structural = facts.latest_structural_at + STRUCTURAL_CADENCE_SECONDS;
-        let reward = facts.latest_reward_event_end + REWARD_CADENCE_SECONDS + REWARD_MARGIN_SECONDS;
-        facts
-            .retry_due_at
-            .into_iter()
-            .chain([structural, reward])
-            .min()
-            .unwrap()
     }
 
     fn observe_active(facet: RewardFacet, canonical_event_marker: u64) -> RewardFacet {
@@ -851,73 +789,62 @@ mod anchored_dynamic_backing {
     }
 
     #[test]
-    fn prepared_push_is_safe_across_rate_increase_and_settles_once() {
+    fn staged_claim_waits_for_current_rate_and_redeems_once() {
         let io_fee = 10_000;
         let initial = Economy::bootstrap(ANCHOR_TARGET_E8S)
             .unwrap()
             .add_backed_issuance(20 * E8S_PER_ICP)
             .unwrap();
-        let prepared = initial.prepare_push(E8S_PER_ICP, 1_000, 60, 7).unwrap();
-        let appreciated = initial.add_backed_issuance(E8S_PER_ICP).unwrap();
-        assert!(
-            mul_div_floor(
-                prepared.principal,
-                appreciated.backing.total().unwrap(),
-                appreciated.claims
-            )
-            .unwrap()
-                >= prepared.gross_payout
-        );
-        let mut proofs = Vec::new();
-        let proved = appreciated
-            .prove_push(prepared, prepared.expires_at, io_fee, &mut proofs)
+        // The initial user transfer burns only its ordinary fee. Its staged
+        // principal remains in C until canonical payout success.
+        let staged = initial.io_fee_burn(io_fee).unwrap();
+        assert_eq!(staged.claims, initial.claims - io_fee);
+        let initial_quote =
+            mul_div_floor(E8S_PER_ICP, staged.backing.total().unwrap(), staged.claims).unwrap();
+        let appreciated = staged.add_backed_issuance(E8S_PER_ICP).unwrap();
+        let mut proved_blocks = Vec::new();
+        let (paid, gross, net) = appreciated
+            .redeem_staged(7, E8S_PER_ICP, io_fee, &mut proved_blocks)
             .unwrap();
-        assert_eq!(proved.payout_obligation, prepared.gross_payout);
+        assert!(gross >= initial_quote);
+        assert_eq!(net, gross - io_fee);
+        assert_eq!(paid.claims, appreciated.claims - E8S_PER_ICP);
         assert_eq!(
-            appreciated.prove_push(prepared, prepared.expires_at, io_fee, &mut proofs),
+            appreciated.redeem_staged(7, E8S_PER_ICP, io_fee, &mut proved_blocks),
             Err(ModelError::DuplicateProof)
-        );
-        assert_eq!(
-            proved
-                .pay_obligation(prepared.gross_payout)
-                .unwrap()
-                .payout_obligation,
-            0
         );
     }
 
     #[test]
-    fn settlement_uses_transfer_time_not_keeper_time() {
+    fn illiquid_staging_creates_no_debt_and_can_retry_later() {
         let state = Economy::bootstrap(ANCHOR_TARGET_E8S)
             .unwrap()
             .add_backed_issuance(5 * E8S_PER_ICP)
             .unwrap();
-        let prepared = state.prepare_push(E8S_PER_ICP, 100, 10, 1).unwrap();
-        let mut proofs = Vec::new();
-        state.prove_push(prepared, 110, 0, &mut proofs).unwrap();
-        let late = state.prepare_push(E8S_PER_ICP, 100, 10, 2).unwrap();
+        let mut illiquid = state;
+        illiquid.backing.dynamic = illiquid.backing.liquid;
+        illiquid.dynamic_physical += illiquid.backing.liquid;
+        illiquid.backing.liquid = 0;
+        illiquid.validate().unwrap();
+        let mut blocks = Vec::new();
         assert_eq!(
-            state.prove_push(late, 111, 0, &mut proofs),
-            Err(ModelError::LatePush)
+            illiquid.redeem_staged(1, E8S_PER_ICP, 10_000, &mut blocks),
+            Err(ModelError::InsufficientBacking)
         );
+        assert!(blocks.is_empty());
+        assert_eq!(illiquid.claims, state.claims);
     }
 
     #[test]
-    fn multiple_prepared_pushes_remain_aggregate_solvent() {
-        let state = Economy::bootstrap(ANCHOR_TARGET_E8S)
-            .unwrap()
-            .add_backed_issuance(10 * E8S_PER_ICP)
-            .unwrap();
-        let first = state.prepare_push(3 * E8S_PER_ICP, 1, 100, 1).unwrap();
-        let second = state.prepare_push(4 * E8S_PER_ICP, 1, 100, 2).unwrap();
-        let mut proofs = Vec::new();
-        let after_first = state.prove_push(first, 2, 0, &mut proofs).unwrap();
-        let after_second = after_first.prove_push(second, 2, 0, &mut proofs).unwrap();
-        assert_eq!(
-            after_second.payout_obligation,
-            first.gross_payout + second.gross_payout
-        );
-        assert!(after_second.payout_obligation <= state.backing.total().unwrap());
+    fn reserve_sweep_establishes_the_expected_final_claim_supply() {
+        let supply_before = 50 * E8S_PER_ICP;
+        let reserve_before = 10 * E8S_PER_ICP;
+        let staged = E8S_PER_ICP;
+        let sweep_fee = 10_000;
+        let expected_claims_after = supply_before - reserve_before - staged;
+        let supply_after = supply_before - sweep_fee;
+        let reserve_after = reserve_before + staged - sweep_fee;
+        assert_eq!(supply_after - reserve_after, expected_claims_after);
     }
 
     #[test]
@@ -1009,27 +936,6 @@ mod anchored_dynamic_backing {
         let transition_immediately_before_poll = STRUCTURAL_CADENCE_SECONDS - 1;
         let prompt_detection_at = STRUCTURAL_CADENCE_SECONDS;
         assert!(prompt_detection_at - transition_immediately_before_poll <= 1);
-    }
-
-    #[test]
-    fn stream_deadline_reconstruction_preserves_reward_margin_and_short_retry() {
-        let facts = SchedulerFacts {
-            latest_structural_at: 1_000,
-            latest_reward_event_end: 5_000,
-            retry_due_at: None,
-        };
-        assert_eq!(next_stream_deadline(facts), 44_200);
-        let retrying = SchedulerFacts {
-            retry_due_at: Some(1_060),
-            ..facts
-        };
-        assert_eq!(next_stream_deadline(retrying), 1_060);
-        let restarted = SchedulerFacts { ..retrying };
-        assert_eq!(next_stream_deadline(restarted), 1_060);
-        assert_eq!(
-            5_000 + REWARD_CADENCE_SECONDS + REWARD_MARGIN_SECONDS,
-            91_700
-        );
     }
 
     #[test]

@@ -2,7 +2,7 @@ use candid::{CandidType, Principal};
 use ic_stable_structures::{
     memory_manager::{MemoryId, MemoryManager, VirtualMemory},
     storable::Bound,
-    DefaultMemoryImpl, StableBTreeMap, StableCell, Storable,
+    DefaultMemoryImpl, StableCell, Storable,
 };
 use serde::Deserialize;
 use std::{borrow::Cow, cell::RefCell};
@@ -15,11 +15,12 @@ use crate::{
 pub use io_accounts::Account;
 
 type Memory = VirtualMemory<DefaultMemoryImpl>;
-pub(crate) const LAUNCH_SCHEMA_MARKER: u8 = 10;
+pub(crate) const LAUNCH_SCHEMA_MARKER: u8 = 13;
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct StreamConfig {
     pub io_ledger: Principal,
+    pub io_index: Principal,
     pub icp_ledger: Principal,
     pub nns_manager: Principal,
     pub jupiter_io_account: Account,
@@ -33,7 +34,7 @@ pub struct StreamConfig {
     pub minimum_redemption_io_e8s: u128,
     pub expected_io_fee_e8s: u128,
     pub expected_icp_fee_e8s: u128,
-    pub maximum_request_lifetime_nanos: u64,
+    pub redemption_poll_interval_seconds: u64,
     pub retry_delay_nanos: u64,
     pub ledger_deduplication_window_nanos: u64,
 }
@@ -47,6 +48,7 @@ impl StreamConfig {
         let principals = [
             ("canister self", canister_self),
             ("IO ledger", self.io_ledger),
+            ("IO index", self.io_index),
             ("ICP ledger", self.icp_ledger),
             ("NNS manager", self.nns_manager),
             ("SNS governance", self.sns_governance),
@@ -90,6 +92,13 @@ impl StreamConfig {
         if self.jupiter_io_account.effective_eq(&self.io_reserve)? {
             return Err("Jupiter IO account and reserve must be distinct".into());
         }
+        let staging = io_accounts::redemption_staging(canister_self);
+        if staging.effective_eq(&self.io_reserve)?
+            || staging.effective_eq(&self.liquid_icp)?
+            || staging.effective_eq(&self.jupiter_io_account)?
+        {
+            return Err("redemption staging Account must be semantically distinct".into());
+        }
         if self.nonredeemable_governance_io_accounts.len() > Self::MAX_EXCLUDED_ACCOUNTS {
             return Err("too many nonredeemable governance IO accounts".into());
         }
@@ -105,24 +114,33 @@ impl StreamConfig {
             if account.effective_eq(&self.jupiter_io_account)? {
                 return Err("Jupiter IO account cannot be excluded".into());
             }
+            if account.effective_eq(&staging)? {
+                return Err("redemption staging Account cannot be excluded".into());
+            }
             if !canonical_excluded.insert(account.canonical()?) {
                 return Err("nonredeemable governance IO accounts must be unique".into());
             }
         }
-        if self.minimum_redemption_io_e8s <= self.expected_io_fee_e8s {
-            return Err("minimum redemption must exceed the IO fee".into());
+        if self.minimum_redemption_io_e8s <= self.expected_io_fee_e8s
+            || self.minimum_redemption_io_e8s <= self.expected_icp_fee_e8s
+        {
+            return Err("minimum redemption must exceed both launch fees".into());
         }
         for fee in [self.expected_io_fee_e8s, self.expected_icp_fee_e8s] {
             if fee == 0 || fee > Self::MAX_FEE_E8S {
                 return Err("configured fee is outside launch bounds".into());
             }
         }
-        if self.maximum_request_lifetime_nanos == 0
-            || self.retry_delay_nanos == 0
-            || self.retry_delay_nanos >= self.ledger_deduplication_window_nanos
-            || self.maximum_request_lifetime_nanos > self.ledger_deduplication_window_nanos
+        if !(crate::redemption::AUTOMATIC_POLL_MIN_SECONDS
+            ..=crate::redemption::AUTOMATIC_POLL_MAX_SECONDS)
+            .contains(&self.redemption_poll_interval_seconds)
         {
-            return Err("request/retry windows are invalid".into());
+            return Err("redemption poll interval is outside launch bounds".into());
+        }
+        if self.retry_delay_nanos == 0
+            || self.retry_delay_nanos >= self.ledger_deduplication_window_nanos
+        {
+            return Err("retry/deduplication windows are invalid".into());
         }
         Ok(())
     }
@@ -340,6 +358,16 @@ pub struct StreamStateV1 {
     pub next_operation_sequence: OperationSequence,
     pub control_epoch: u64,
     pub last_completed_claim_receipt: Option<CompletedClaimBackingReceipt>,
+    pub redemption_scan_cursor: RedemptionScanCursor,
+    pub pending_redemption_blocks: Vec<u64>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
+pub struct RedemptionScanCursor {
+    pub committed_head: Option<u64>,
+    pub captured_head: Option<u64>,
+    pub resume_before: Option<u64>,
+    pub last_error: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -358,6 +386,7 @@ impl StreamStateV1 {
             launch_schema_marker: LAUNCH_SCHEMA_MARKER,
             config: StreamConfig {
                 io_ledger: anonymous,
+                io_index: anonymous,
                 icp_ledger: anonymous,
                 nns_manager: anonymous,
                 jupiter_io_account: account.clone(),
@@ -371,7 +400,7 @@ impl StreamStateV1 {
                 minimum_redemption_io_e8s: 1,
                 expected_io_fee_e8s: 0,
                 expected_icp_fee_e8s: 0,
-                maximum_request_lifetime_nanos: 1,
+                redemption_poll_interval_seconds: 60,
                 retry_delay_nanos: 1,
                 ledger_deduplication_window_nanos: 2,
             },
@@ -389,6 +418,8 @@ impl StreamStateV1 {
             next_operation_sequence: OperationSequence(0),
             control_epoch: 0,
             last_completed_claim_receipt: None,
+            redemption_scan_cursor: Default::default(),
+            pending_redemption_blocks: Vec::new(),
         }
     }
 }
@@ -399,12 +430,43 @@ impl StreamStateV1 {
             return Err("invalid Stream launch schema marker".into());
         }
         self.config.validate(canister_self)?;
+        if self
+            .redemption_scan_cursor
+            .last_error
+            .as_ref()
+            .is_some_and(|value| value.len() > 512)
+        {
+            return Err("redemption scanner error exceeds 512 bytes".into());
+        }
+        let scan = &self.redemption_scan_cursor;
+        if scan.resume_before.is_some() != scan.captured_head.is_some() {
+            return Err("redemption catch-up cursor is incomplete".into());
+        }
+        if let (Some(resume), Some(captured)) = (scan.resume_before, scan.captured_head) {
+            if captured < resume || scan.committed_head.is_some_and(|head| resume <= head) {
+                return Err("redemption catch-up interval is inconsistent".into());
+            }
+        }
+        if self.pending_redemption_blocks.len() > crate::redemption::MAX_PENDING_CANDIDATES
+            || self
+                .pending_redemption_blocks
+                .iter()
+                .enumerate()
+                .any(|(index, block)| self.pending_redemption_blocks[..index].contains(block))
+        {
+            return Err("redemption candidate queue must be unique and bounded".into());
+        }
         match &self.active_operation {
             Some(StreamOperation::Redemption(operation)) => match operation.as_ref() {
                 RedemptionStreamOperation::Active(value) => {
                     value.validate(&self.config)?;
                     if value.sequence.0 >= self.next_operation_sequence.0 {
                         return Err("active redemption sequence was not reserved".into());
+                    }
+                    let source = u64::try_from(value.source_io_block)
+                        .map_err(|_| "active redemption source block exceeds u64")?;
+                    if !self.pending_redemption_blocks.contains(&source) {
+                        return Err("active redemption source is not queued".into());
                     }
                 }
             },
@@ -699,74 +761,6 @@ fn validate_entitlement_entries(
     Ok(())
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
-pub struct CallerRedemptionState {
-    pub next_nonce: u64,
-    pub pending: Option<CallerRedemptionPending>,
-    pub last_request_fingerprint: Option<Vec<u8>>,
-    pub last_result: Option<RedemptionResult>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub enum CallerRedemptionPending {
-    Prepared(Box<crate::redemption::PreparedRedemption>),
-    Pushed(Box<crate::redemption::PushedRedemption>),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
-pub struct RedemptionResult {
-    pub request_fingerprint: Vec<u8>,
-    pub nonce: u64,
-    pub io_block: u128,
-    pub icp_block: u128,
-    pub net_icp_e8s: u128,
-    pub gross_icp_e8s: u128,
-    pub io_fee_e8s: u128,
-    pub icp_fee_e8s: u128,
-    pub completed_at_nanos: u64,
-}
-
-impl CallerRedemptionState {
-    pub fn validate(&self) -> Result<(), String> {
-        match (&self.last_request_fingerprint, &self.last_result) {
-            (None, None) => {}
-            (Some(fingerprint), Some(result))
-                if fingerprint.len() == 32
-                    && result.request_fingerprint == *fingerprint
-                    && result.request_fingerprint.len() == 32
-                    && result.nonce.checked_add(1) == Some(self.next_nonce)
-                    && result.completed_at_nanos > 0 => {}
-            _ => return Err("caller redemption replay state is inconsistent".into()),
-        }
-        if self.pending.as_ref().is_some_and(|pending| match pending {
-            CallerRedemptionPending::Prepared(value) => {
-                value.request.nonce != self.next_nonce
-                    || value.request_fingerprint.len() != 32
-                    || value.caller == Principal::anonymous()
-            }
-            CallerRedemptionPending::Pushed(value) => {
-                value.prepared.request.nonce != self.next_nonce
-                    || value.prepared.request_fingerprint.len() != 32
-                    || value.prepared.caller == Principal::anonymous()
-            }
-        }) {
-            return Err("caller pending redemption is inconsistent".into());
-        }
-        Ok(())
-    }
-
-    pub fn validate_with_config(&self, config: &StreamConfig) -> Result<(), String> {
-        self.validate()?;
-        if let Some(pending) = &self.pending {
-            match pending {
-                CallerRedemptionPending::Prepared(value) => value.validate(config)?,
-                CallerRedemptionPending::Pushed(value) => value.validate(config)?,
-            }
-        }
-        Ok(())
-    }
-}
-
 macro_rules! candid_storable {
     ($type:ty, $max:expr) => {
         impl Storable for $type {
@@ -791,14 +785,11 @@ macro_rules! candid_storable {
 }
 
 candid_storable!(StableStreamState, 2_000_000);
-candid_storable!(CallerRedemptionState, 8_192);
 
 thread_local! {
     static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> =
         RefCell::new(MemoryManager::init(DefaultMemoryImpl::default()));
     static STATE: RefCell<Option<StableCell<StableStreamState, Memory>>> =
-        const { RefCell::new(None) };
-    static REDEMPTIONS: RefCell<Option<StableBTreeMap<Principal, CallerRedemptionState, Memory>>> =
         const { RefCell::new(None) };
 }
 
@@ -808,10 +799,6 @@ pub fn initialize(state: StreamStateV1, canister_self: Principal) -> Result<(), 
         let memory = MEMORY_MANAGER.with(|manager| manager.borrow().get(MemoryId::new(0)));
         let cell = StableCell::init(memory, StableStreamState::V1(state));
         *slot.borrow_mut() = Some(cell);
-    });
-    REDEMPTIONS.with(|slot| {
-        let memory = MEMORY_MANAGER.with(|manager| manager.borrow().get(MemoryId::new(1)));
-        *slot.borrow_mut() = Some(StableBTreeMap::init(memory));
     });
     Ok(())
 }
@@ -823,10 +810,6 @@ pub fn reopen(canister_self: Principal) {
             memory,
             StableStreamState::V1(StreamStateV1::decode_placeholder()),
         ));
-    });
-    REDEMPTIONS.with(|slot| {
-        let memory = MEMORY_MANAGER.with(|manager| manager.borrow().get(MemoryId::new(1)));
-        *slot.borrow_mut() = Some(StableBTreeMap::init(memory));
     });
     let mut reopened = read();
     reopened
@@ -864,35 +847,31 @@ impl StableStreamState {
     }
 }
 
-pub fn caller_state(caller: Principal) -> CallerRedemptionState {
-    let value = REDEMPTIONS.with(|slot| {
-        slot.borrow()
-            .as_ref()
-            .expect("redemption map is not initialized")
-            .get(&caller)
-            .unwrap_or_default()
-    });
-    value
-        .validate_with_config(&read().config)
-        .unwrap_or_else(|error| panic!("invalid caller redemption state: {error}"));
-    value
-}
-
-pub fn set_caller_state(caller: Principal, state: CallerRedemptionState) {
-    state
-        .validate_with_config(&read().config)
-        .unwrap_or_else(|error| panic!("invalid caller redemption state write: {error}"));
-    REDEMPTIONS.with(|slot| {
-        slot.borrow_mut()
-            .as_mut()
-            .expect("redemption map is not initialized")
-            .insert(caller, state);
-    });
-}
-
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn redemption_candidate_queue_is_unique_and_bounded() {
+        let (canister_self, mut state) = valid_state();
+        state.pending_redemption_blocks =
+            (1..=crate::redemption::MAX_PENDING_CANDIDATES as u64).collect();
+        assert_eq!(state.validate(canister_self), Ok(()));
+        state.pending_redemption_blocks.reverse();
+        assert_eq!(state.validate(canister_self), Ok(()));
+        state.pending_redemption_blocks.push(1);
+        assert!(state.validate(canister_self).is_err());
+    }
+
+    #[test]
+    fn single_entry_captured_scan_page_allows_equal_exclusive_resume_cursor() {
+        let (canister_self, mut state) = valid_state();
+        state.redemption_scan_cursor.captured_head = Some(8);
+        state.redemption_scan_cursor.resume_before = Some(8);
+        assert_eq!(state.validate(canister_self), Ok(()));
+        state.redemption_scan_cursor.captured_head = Some(7);
+        assert!(state.validate(canister_self).is_err());
+    }
 
     #[derive(CandidType)]
     enum PriorStableStreamState {
@@ -962,6 +941,7 @@ pub(crate) mod tests {
                 launch_schema_marker: LAUNCH_SCHEMA_MARKER,
                 config: StreamConfig {
                     io_ledger: principal(2),
+                    io_index: principal(8),
                     icp_ledger: principal(3),
                     nns_manager,
                     jupiter_io_account: account(principal(7), 2),
@@ -975,7 +955,7 @@ pub(crate) mod tests {
                     minimum_redemption_io_e8s: 100,
                     expected_io_fee_e8s: 10,
                     expected_icp_fee_e8s: 10,
-                    maximum_request_lifetime_nanos: 1_000,
+                    redemption_poll_interval_seconds: 60,
                     retry_delay_nanos: 10,
                     ledger_deduplication_window_nanos: 2_000,
                 },
@@ -993,6 +973,8 @@ pub(crate) mod tests {
                 next_operation_sequence: OperationSequence(1),
                 control_epoch: 0,
                 last_completed_claim_receipt: None,
+                redemption_scan_cursor: Default::default(),
+                pending_redemption_blocks: Vec::new(),
             },
         )
     }
@@ -1405,5 +1387,61 @@ pub(crate) mod tests {
             assert_eq!(read().active_operation, state.active_operation);
             assert_eq!(read().lifecycle, Lifecycle::Paused);
         }
+    }
+
+    #[test]
+    fn active_sweep_and_candidate_queue_round_trip_same_schema_restart() {
+        let (canister_self, mut state) = valid_state();
+        let reserve_sweep = crate::transfer::TransferAttempt {
+            intent: crate::transfer::OwnTransferIntent::Icrc1 {
+                ledger: state.config.io_ledger,
+                from_subaccount: io_accounts::redemption_staging(canister_self)
+                    .canonical()
+                    .unwrap()
+                    .subaccount,
+                to: state.config.io_reserve.clone(),
+                amount: 90,
+                fee: 10,
+                memo: crate::transfer::deterministic_memo(
+                    b"io-redemption-sweep-v1",
+                    Principal::from_slice(&5_u128.to_be_bytes()),
+                    1,
+                ),
+                created_at_time: 1,
+            },
+            state: crate::transfer::TransferState::Submitted {
+                epoch: DispatchEpoch(1),
+                first_submitted_at: 1,
+                last_submitted_at: 1,
+            },
+        };
+        state.lifecycle = Lifecycle::Ready;
+        state.next_operation_sequence = OperationSequence(2);
+        state.active_operation = Some(StreamOperation::Redemption(Box::new(
+            RedemptionStreamOperation::Active(Box::new(crate::redemption::RedemptionOperation {
+                sequence: OperationSequence(1),
+                source_io_block: 5,
+                source_account: Account {
+                    owner: principal(9),
+                    subaccount: None,
+                },
+                staged_io_amount_e8s: 100,
+                gross_icp_e8s: 100,
+                net_icp_e8s: 90,
+                icp_fee_e8s: 10,
+                io_sweep_fee_e8s: 10,
+                stage: crate::redemption::RedemptionStage::Sweep {
+                    payout_block: 7,
+                    attempt: reserve_sweep,
+                },
+            })),
+        )));
+        state.pending_redemption_blocks = vec![5];
+        initialize(state.clone(), canister_self).unwrap();
+        write(state.clone());
+        reopen(canister_self);
+        assert_eq!(read().active_operation, state.active_operation);
+        assert_eq!(read().pending_redemption_blocks, vec![5]);
+        assert_eq!(read().lifecycle, Lifecycle::Paused);
     }
 }

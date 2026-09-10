@@ -1303,6 +1303,7 @@ fn install_controlled_stream(
         encode_one(InitArgs {
             config: StreamConfig {
                 io_ledger,
+                io_index: Principal::from_slice(&[18; 29]),
                 icp_ledger: fixture.ledger,
                 nns_manager: fixture.controller,
                 jupiter_io_account: jupiter_destination.clone(),
@@ -1319,7 +1320,7 @@ fn install_controlled_stream(
                 minimum_redemption_io_e8s: 20_000,
                 expected_io_fee_e8s: ICP_FEE_E8S.into(),
                 expected_icp_fee_e8s: ICP_FEE_E8S.into(),
-                maximum_request_lifetime_nanos: 900_000_000_000,
+                redemption_poll_interval_seconds: 60,
                 retry_delay_nanos: 1_000_000_000,
                 ledger_deduplication_window_nanos: 86_400_000_000_000,
             },
@@ -1650,6 +1651,7 @@ fn settle_controlled_genesis_pool(
 
 struct CombinedRealSns {
     governance: crate::sns_governance_setup::GovernanceLedgerFixture,
+    index: Principal,
     root: Principal,
     stream: Principal,
     reserve: io_stream_manager::Account,
@@ -1670,6 +1672,7 @@ fn install_combined_real_sns(fixture: &ControlledNnsNeuron) -> CombinedRealSns {
     let governance_wasm = artifacts.load_required("sns_governance").unwrap();
     let root_wasm = artifacts.load_required("sns_root").unwrap();
     let ledger_wasm = artifacts.load_required("sns_ledger").unwrap();
+    let index_wasm = artifacts.load_required("sns_index").unwrap();
     let governance_hash = Sha256::digest(&governance_wasm).to_vec();
     let sns_subnet = fixture.pic.topology().get_sns().unwrap();
     let root = fixture
@@ -1719,6 +1722,9 @@ fn install_combined_real_sns(fixture: &ControlledNnsNeuron) -> CombinedRealSns {
             ],
         ),
     );
+    fixture
+        .pic
+        .install_canister(index, index_wasm, icrc::index_init_arg(ledger), None);
     fixture.pic.install_canister(
         root,
         root_wasm,
@@ -1772,6 +1778,7 @@ fn install_combined_real_sns(fixture: &ControlledNnsNeuron) -> CombinedRealSns {
         .collect();
     CombinedRealSns {
         governance: governance_fixture,
+        index,
         root,
         stream,
         reserve,
@@ -1790,6 +1797,7 @@ fn install_combined_stream(fixture: &ControlledNnsNeuron, sns: &CombinedRealSns)
         encode_one(InitArgs {
             config: StreamConfig {
                 io_ledger: sns.governance.ledger,
+                io_index: sns.index,
                 icp_ledger: fixture.ledger,
                 nns_manager: fixture.controller,
                 jupiter_io_account: io_stream_manager::Account {
@@ -1806,7 +1814,7 @@ fn install_combined_stream(fixture: &ControlledNnsNeuron, sns: &CombinedRealSns)
                 minimum_redemption_io_e8s: 20_000,
                 expected_io_fee_e8s: ICP_FEE_E8S.into(),
                 expected_icp_fee_e8s: ICP_FEE_E8S.into(),
-                maximum_request_lifetime_nanos: 900_000_000_000,
+                redemption_poll_interval_seconds: 60,
                 retry_delay_nanos: 1_000_000_000,
                 ledger_deduplication_window_nanos: 86_400_000_000_000,
             },
@@ -2671,7 +2679,7 @@ mod tests {
     ) {
         use candid::Nat;
         use io_stream_manager::{
-            ApiError as StreamApiError, PreparedRedemption, RedeemArgs, RedemptionProgress,
+            Account as StreamAccount, ApiError as StreamApiError, RedemptionProgress,
             RewardBackingProgress, RewardEventClassification, Status as StreamStatus,
             StreamProgress,
         };
@@ -3765,7 +3773,6 @@ mod tests {
             assert_eq!(resumed, Ok(()));
         }
         let redemption_amount = 20_000_000_u64;
-        let now = fixture.pic.get_time().as_nanos_since_unix_epoch();
         let supply_before = u128::try_from(
             icrc::icrc1_total_supply(&fixture.pic, sns.governance.ledger)
                 .0
@@ -3805,6 +3812,33 @@ mod tests {
             (),
         );
         let redemption_backing = redemption_backing.unwrap();
+        let staging: StreamAccount = super::query(
+            &fixture.pic,
+            sns.stream,
+            Principal::anonymous(),
+            "get_redemption_staging_account",
+            (),
+        );
+        icrc::icrc1_transfer(
+            &fixture.pic,
+            sns.governance.ledger,
+            fixture.controller,
+            icrc::transfer_arg(
+                None,
+                icrc::account(
+                    staging.owner,
+                    staging
+                        .subaccount
+                        .as_deref()
+                        .map(|value| value.try_into().unwrap()),
+                ),
+                redemption_amount,
+                Some(ICP_FEE_E8S),
+                None,
+                None,
+            ),
+        )
+        .expect("combined redemption stages IO without a special memo");
         let quote = io_core_model::redemption_quote(
             io_core_model::EconomicState {
                 backing: io_core_model::Backing {
@@ -3813,12 +3847,11 @@ mod tests {
                     unwinding: redemption_backing.live_child_net_backing_e8s,
                     transit: redemption_backing.transit_backing_e8s,
                 },
-                claims: supply_before - reserve_before,
+                claims: supply_before - u128::from(ICP_FEE_E8S) - reserve_before,
                 active_backing: 0,
                 active_reward: 0,
             },
             redemption_amount.into(),
-            ICP_FEE_E8S.into(),
             ICP_FEE_E8S.into(),
         )
         .unwrap();
@@ -3832,210 +3865,87 @@ mod tests {
                 subaccount: None,
             },
         );
-        let redemption_args = RedeemArgs {
-            from_subaccount: None,
-            io_amount_e8s: redemption_amount.into(),
-            min_icp_out_e8s: quote.net_icp,
-            max_io_fee_e8s: ICP_FEE_E8S.into(),
-            max_icp_fee_e8s: ICP_FEE_E8S.into(),
-            expires_at_nanos: now + 800_000_000_000,
-            nonce: 0,
-        };
-        let prepared: Result<PreparedRedemption, StreamApiError> = super::update(
-            &fixture.pic,
-            sns.stream,
-            fixture.controller,
-            "prepare_redemption",
-            redemption_args.clone(),
-        );
-        let prepared = prepared.expect("combined redemption prepares an exact push");
-        let push_block = icrc::icrc1_transfer(
-            &fixture.pic,
-            sns.governance.ledger,
-            fixture.controller,
-            icrc::transfer_arg(
-                prepared
-                    .account
-                    .subaccount
-                    .as_deref()
-                    .map(|value| value.try_into().unwrap()),
-                icrc::account(
-                    prepared.reserve.owner,
-                    prepared
-                        .reserve
-                        .subaccount
-                        .as_deref()
-                        .map(|value| value.try_into().unwrap()),
-                ),
-                prepared.request.io_amount_e8s.try_into().unwrap(),
-                Some(prepared.snapshot.io_fee_e8s.try_into().unwrap()),
-                Some(&prepared.push_memo),
-                Some(prepared.prepared_at_nanos),
-            ),
-        )
-        .expect("combined redemption sends its exact reserve push");
-        let push_block = u128::try_from(push_block.0).unwrap();
-        let initial: Result<RedemptionProgress, StreamApiError> = super::update(
-            &fixture.pic,
-            sns.stream,
-            fixture.controller,
-            "settle_redemption",
-            push_block,
-        );
-        let mut redemption = match initial {
-            Ok(RedemptionProgress::Completed(completed)) => {
-                let status: StreamStatus = super::query(
-                    &fixture.pic,
-                    sns.stream,
-                    Principal::anonymous(),
-                    "get_status",
-                    (),
-                );
-                assert!(status.operation_kind.is_none());
-                Some(completed)
+        let mut redemption_completed = false;
+        let mut redemption_recovery_steps = Vec::new();
+        for _ in 0..24 {
+            fixture.pic.tick();
+            let status: StreamStatus = super::query(
+                &fixture.pic,
+                sns.stream,
+                Principal::anonymous(),
+                "get_status",
+                (),
+            );
+            match status.operation_kind.as_deref() {
+                Some("BackingReconciliation") | Some("Redemption") => {
+                    let resumed: Result<StreamProgress, StreamApiError> = super::update(
+                        &fixture.pic,
+                        sns.stream,
+                        Principal::anonymous(),
+                        "resume",
+                        (),
+                    );
+                    redemption_recovery_steps.push(format!("resume={resumed:?}"));
+                    match resumed {
+                        Ok(StreamProgress::Redemption(RedemptionProgress::Completed)) => {}
+                        Ok(StreamProgress::Redemption(_)) => {}
+                        Ok(StreamProgress::BackingReconciliation)
+                        | Err(StreamApiError::Pending(_))
+                        | Err(StreamApiError::Busy) => {}
+                        other => panic!("combined redemption recovery failed: {other:?}"),
+                    }
+                }
+                None => {
+                    let wake: Result<(), StreamApiError> = super::update(
+                        &fixture.pic,
+                        sns.stream,
+                        fixture.controller,
+                        "process_redemptions",
+                        (),
+                    );
+                    wake.unwrap();
+                }
+                other => panic!("unrelated operation blocked redemption: {other:?}"),
             }
-            Ok(RedemptionProgress::Pending) => {
-                let status: StreamStatus = super::query(
-                    &fixture.pic,
-                    sns.stream,
-                    Principal::anonymous(),
-                    "get_status",
-                    (),
-                );
-                assert!(
-                    matches!(
-                        status.operation_kind.as_deref(),
-                        Some("Redemption") | Some("BackingReconciliation")
-                    ),
-                    "a proved push may wait behind the one active reconciliation slot: {status:?}"
-                );
-                assert!(status.operation_phase.is_some());
-                None
+            let observed_icp = super::query::<Nat>(
+                &fixture.pic,
+                fixture.ledger,
+                Principal::anonymous(),
+                "icrc1_balance_of",
+                ManagerAccount {
+                    owner: fixture.controller,
+                    subaccount: None,
+                },
+            );
+            redemption_completed = observed_icp == icp_before.clone() + Nat::from(quote.net_icp);
+            if redemption_completed {
+                break;
             }
-            other => panic!("combined redemption failed initially: {other:?}"),
-        };
+            fixture.pic.advance_time(Duration::from_secs(1));
+        }
+        if !redemption_completed {
+            panic!("combined staged redemption exceeded bounded recovery attempts: {redemption_recovery_steps:?}")
+        }
         fixture
             .pic
             .upgrade_canister(sns.stream, stream_wasm, encode_one(()).unwrap(), None)
             .unwrap();
-        let mut redemption_recovery_steps = Vec::new();
-        if redemption.is_none() {
-            for _ in 0..24 {
-                let status: StreamStatus = super::query(
-                    &fixture.pic,
-                    sns.stream,
-                    Principal::anonymous(),
-                    "get_status",
-                    (),
-                );
-                match status.operation_kind.as_deref() {
-                    Some("BackingReconciliation") => {
-                        let manager_progress: Result<ManagerNnsProgress, ManagerApiError> =
-                            super::update(
-                                &fixture.pic,
-                                fixture.controller,
-                                Principal::anonymous(),
-                                "resume",
-                                (),
-                            );
-                        let progress: Result<StreamProgress, StreamApiError> = super::update(
-                            &fixture.pic,
-                            sns.stream,
-                            Principal::anonymous(),
-                            "resume",
-                            (),
-                        );
-                        redemption_recovery_steps.push(format!(
-                            "backing manager={manager_progress:?} stream={progress:?}"
-                        ));
-                        assert!(
-                            matches!(
-                                manager_progress,
-                                Ok(ManagerNnsProgress::Pool(_))
-                                    | Ok(ManagerNnsProgress::Idle)
-                                    | Err(ManagerApiError::Pending(_))
-                                    | Err(ManagerApiError::Busy)
-                            ),
-                            "combined NNS backing recovery failed: {manager_progress:?}"
-                        );
-                        assert!(
-                            matches!(
-                                progress,
-                                Ok(StreamProgress::BackingReconciliation)
-                                    | Err(StreamApiError::Pending(_))
-                            ),
-                            "combined backing contention failed: {progress:?}"
-                        );
-                    }
-                    Some("Redemption") => {
-                        let progress: Result<StreamProgress, StreamApiError> = super::update(
-                            &fixture.pic,
-                            sns.stream,
-                            Principal::anonymous(),
-                            "resume",
-                            (),
-                        );
-                        redemption_recovery_steps.push(format!("redemption={progress:?}"));
-                        match progress {
-                            Ok(StreamProgress::Redemption(RedemptionProgress::Pending))
-                            | Err(StreamApiError::Pending(_)) => {}
-                            Ok(StreamProgress::Redemption(RedemptionProgress::Completed(
-                                completed,
-                            ))) => {
-                                redemption = Some(completed);
-                                break;
-                            }
-                            other => panic!("combined pending redemption failed: {other:?}"),
-                        }
-                    }
-                    None => {
-                        let progress: Result<RedemptionProgress, StreamApiError> = super::update(
-                            &fixture.pic,
-                            sns.stream,
-                            Principal::anonymous(),
-                            "resume_redemption",
-                            fixture.controller,
-                        );
-                        redemption_recovery_steps.push(format!("activate={progress:?}"));
-                        match progress {
-                            Ok(RedemptionProgress::Pending) | Err(StreamApiError::Pending(_)) => {}
-                            Ok(RedemptionProgress::Completed(completed)) => {
-                                redemption = Some(completed);
-                                break;
-                            }
-                            other => panic!("combined pushed redemption failed: {other:?}"),
-                        }
-                    }
-                    other => panic!("unrelated operation blocked redemption: {other:?}"),
-                }
-            }
-        }
-        let redemption = redemption.unwrap_or_else(|| {
-            panic!(
-                "combined redemption exceeded bounded recovery attempts: {redemption_recovery_steps:?}"
-            )
-        });
-        assert_eq!(redemption.gross_icp_e8s, quote.gross_icp);
-        assert_eq!(redemption.net_icp_e8s, quote.net_icp);
-        let replay: Result<RedemptionProgress, StreamApiError> = super::update(
-            &fixture.pic,
-            sns.stream,
-            fixture.controller,
-            "settle_redemption",
-            push_block,
-        );
-        assert_eq!(
-            replay,
-            Ok(RedemptionProgress::Completed(redemption.clone()))
-        );
-        let idle: Result<StreamProgress, StreamApiError> = super::update(
+        let upgraded_status: StreamStatus = super::query(
             &fixture.pic,
             sns.stream,
             Principal::anonymous(),
-            "resume",
+            "get_status",
             (),
         );
-        assert_eq!(idle, Ok(StreamProgress::Idle));
+        assert!(upgraded_status.operation_kind.is_none());
+        let resumed: Result<(), StreamApiError> = super::update(
+            &fixture.pic,
+            sns.stream,
+            sns.governance.governance,
+            "set_paused",
+            false,
+        );
+        assert_eq!(resumed, Ok(()));
         let icp_after = super::query::<Nat>(
             &fixture.pic,
             fixture.ledger,
@@ -4275,7 +4185,7 @@ mod tests {
         )
         .unwrap();
         eprintln!(
-            "combined_real_summary event_round={} ordinary_maturity={} actual_mint={} reward_recipients={} redemption={redemption:?} phases={maturity_phases:?}",
+            "combined_real_summary event_round={} ordinary_maturity={} actual_mint={} reward_recipients={} redemption_quote={quote:?} phases={maturity_phases:?}",
             event.round,
             ordinary_maturity,
             actual_minted_e8s,
@@ -4291,8 +4201,8 @@ mod tests {
             staging_donation_e8s,
             observed_permanent_donation_e8s,
             recipient_after.len(),
-            redemption.gross_icp_e8s,
-            redemption.net_icp_e8s,
+            quote.gross_icp,
+            quote.net_icp,
             before_top_up.claim_bearing_dynamic_principal_e8s,
             top_up_credit,
             top_up_donation,

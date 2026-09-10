@@ -18,9 +18,10 @@ tools/scripts/run-io-stream-manager-live-pocketic
 
 That driver uses the module-qualified exact Rust test name, rebuilds the debug
 Wasm, scopes server cleanup to its run ID and retries only transport failures.
-The replacement test proves prepared ICRC-1 push, exact supplied-block proof,
-durable payout, Paused upgrades, canonical replay, official ICP `query_blocks`
-receipt proof and completed Jupiter reserve settlement.
+The replacement test proves an ordinary no-memo transfer to the fixed
+redemption staging Account, index discovery followed by exact canonical block
+proof, current-rate payout, exact reserve sweep, Paused upgrades, official ICP
+`query_blocks` receipt proof and completed Jupiter reserve settlement.
 
 Mocks remain useful for bounded boundary failures, but mock history is never
 monetary proof. Pinned real-source tests are opt-in and never download artifacts

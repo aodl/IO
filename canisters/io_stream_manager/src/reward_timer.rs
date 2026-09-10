@@ -8,6 +8,31 @@ const RETRY_DELAY_SECONDS: u64 = 60;
 
 thread_local! {
     static ACTIVE_SCHEDULER_TIMER: RefCell<Option<(TimerId, u64)>> = const { RefCell::new(None) };
+    #[cfg(debug_assertions)]
+    static CALLBACK_INVOCATIONS: RefCell<u64> = const { RefCell::new(0) };
+}
+
+#[cfg(debug_assertions)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize)]
+pub struct DebugSchedulerStatus {
+    pub active_deadline_seconds: Option<u64>,
+    pub callback_invocations: u64,
+    pub recovery_deferrals: u64,
+}
+
+#[cfg(debug_assertions)]
+pub fn debug_status() -> DebugSchedulerStatus {
+    DebugSchedulerStatus {
+        active_deadline_seconds: ACTIVE_SCHEDULER_TIMER
+            .with(|slot| slot.borrow().as_ref().map(|(_, deadline)| *deadline)),
+        callback_invocations: CALLBACK_INVOCATIONS.with(|value| *value.borrow()),
+        recovery_deferrals: 0,
+    }
+}
+
+#[cfg(debug_assertions)]
+pub fn debug_install_at(deadline_seconds: u64) {
+    install(Some(deadline_seconds));
 }
 
 pub(crate) fn install_for_ready_state() {
@@ -55,14 +80,14 @@ fn reward_deadline(
     duration_seconds: u64,
     latest_observation: Option<&RewardEventObservation>,
 ) -> Option<u64> {
-    let canonical_deadline = observation_deadline(event, duration_seconds)?;
-    let observed_same_event_at = latest_observation
-        .filter(|observation| observation.event == event)
-        .map(|observation| observation.observed_at_nanos / 1_000_000_000)
-        .filter(|observed_at| *observed_at >= canonical_deadline);
-    match observed_same_event_at {
-        Some(observed_at) => observed_at.checked_add(RETRY_DELAY_SECONDS),
-        None => Some(canonical_deadline),
+    let canonical = observation_deadline(event, duration_seconds)?;
+    match latest_observation
+        .filter(|value| value.event == event)
+        .map(|value| value.observed_at_nanos / 1_000_000_000)
+        .filter(|observed| *observed >= canonical)
+    {
+        Some(observed) => observed.checked_add(RETRY_DELAY_SECONDS),
+        None => Some(canonical),
     }
 }
 
@@ -95,9 +120,10 @@ pub(crate) fn install(deadline_seconds: Option<u64>) {
     let Some(deadline_seconds) = deadline_seconds else {
         return;
     };
-    let now_seconds = ic_cdk::api::time() / 1_000_000_000;
-    let delay = deadline_seconds.saturating_sub(now_seconds);
+    let delay = deadline_seconds.saturating_sub(ic_cdk::api::time() / 1_000_000_000);
     let timer = set_timer(Duration::from_secs(delay), async move {
+        #[cfg(debug_assertions)]
+        CALLBACK_INVOCATIONS.with(|value| *value.borrow_mut() += 1);
         ACTIVE_SCHEDULER_TIMER.with(|slot| {
             slot.borrow_mut().take();
         });
@@ -136,9 +162,8 @@ pub(crate) fn install(deadline_seconds: Option<u64>) {
         crate::state::write(state);
         if work_due {
             if let Err(error) = crate::rewards::observe(now_nanos).await {
-                ic_cdk::api::debug_print(format!(
-                    "structural/reward scheduler work remains due after failure: {error:?}"
-                ));
+                ic_cdk::api::debug_print(format!("structural/reward work remains due: {error:?}"));
+                install_retry();
             }
         } else {
             install_for_ready_state();
@@ -154,42 +179,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reward_and_structural_deadlines_are_independent() {
+    fn reward_deadline_retains_the_coarse_retry_policy() {
         let event = RewardEventId {
             end_timestamp_seconds: 1_000,
             round: 1,
         };
         assert_eq!(observation_deadline(event, 86_400), Some(87_700));
-        let same_event = RewardEventObservation {
+        let observed = RewardEventObservation {
             event,
             proposal_count: 0,
             classification: crate::state::RewardEventClassification::StructuralOnly,
             policy_credit: 0,
             eligible_credit_total: 0,
-            observed_at_nanos: 87_701_000_000_000,
+            observed_at_nanos: 87_701_900_000_000,
         };
         assert_eq!(
-            reward_deadline(event, 86_400, Some(&same_event)),
+            reward_deadline(event, 86_400, Some(&observed)),
             Some(87_761)
         );
-        let checkpoint = ReconciliationCheckpoint {
-            generation: 1,
-            event_marker: 1,
-            observed_at_nanos: 2_000_000_000,
-            claim_supply_e8s: 1,
-            liquid_backing_e8s: 1,
-            pooled_backing_e8s: 0,
-            unwinding_backing_e8s: 0,
-            transit_backing_e8s: 0,
-            total_claim_backing_e8s: 1,
-            active_backing_io_e8s: 0,
-            active_reward_io_e8s: 0,
-            live_cohort_count: 0,
-            oldest_ready_at_seconds: None,
-            pooled_target_e8s: 0,
-            observed_pooled_e8s: 0,
-            snapshot_fingerprint: vec![1; 32],
-        };
-        assert_eq!(structural_deadline(&checkpoint), Some(43_202));
     }
 }

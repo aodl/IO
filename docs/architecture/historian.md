@@ -6,20 +6,25 @@ Its production DID is read-only. A typed optional install/upgrade argument is th
 
 The autonomous one-shot refresh observes coherent ledger supply/reserve inputs, Stream and NNS manager status, SNS Root module/controller/archive topology, SNS Governance parameters/reward freshness, and bounded SNS Index Account histories. The index canisters are the normal history abstraction; current balances remain ledger-derived.
 
-The displayed rate is:
+The displayed canonical claim rate is:
 
 ```text
-redeemable IO = total IO - protocol reserve IO - configured excluded IO
-liquid ICP per IO = liquid ICP reserve / redeemable IO
+C = total IO - formal protocol reserve IO - configured nonredeemable governance IO
+    - paid-but-unswept redemption IO (only during that exact proved phase)
+B = liquid ICP + claim-bearing Dynamic principal
+    + live-child net backing + exact in-transit backing
+claim rate = B / C
 ```
 
 All arithmetic is checked. The monetary snapshot commits total supply, reserve,
-excluded balances, liquid ICP, denominator, and rate together or retains the
+excluded balances, all four backing buckets, the transient Stream retirement
+adjustment, denominator, and rate together or retains the
 last successful snapshot with an error; it does not combine partial monetary
 generations. Other source sections commit independently and carry their own
 freshness/success timestamps, so the dashboard does not claim global atomicity.
-The missing/stale/error state is never zero, and the historian's rate never
-authorizes redemption.
+The missing/stale/error state is never zero. A submitted payout or sweep whose
+physical effect is ambiguous makes the economic snapshot incomplete rather than
+inventing a rate. The historian's rate never authorizes redemption.
 
 Root-mediated observations distinguish module matching, mismatch, unavailable, and unknown, and retain observed controllers. Stream status supplies reward classification and live/pending credits; the historian does not reconstruct ballots or run another event scanner. NNS manager status is observed without issuing NNS commands.
 

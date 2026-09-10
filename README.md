@@ -44,13 +44,14 @@ duplicating transient commit or CI identities here.
 The production model has four IO canisters around canonical SNS, ICP, Index,
 Root, and Governance services:
 
-1. An authenticated user asks the Stream Manager to prepare a short-lived,
-   exact redemption quote and deterministic ICRC-1 push memo.
-2. The Stream Manager reads canonical supply, reserve, excluded-account,
-   backing, and fee values. The user pushes IO to the protocol reserve, and the
-   manager exact-proves that ledger block before creating an immutable ICP
-   payout obligation. If liquid ICP is unexpectedly late, the obligation waits
-   durably and pays exactly once after recovery.
+1. A user makes an ordinary ICRC-1 transfer to the Stream Manager's fixed
+   semantic redemption staging Account. The transfer is explicit intent but
+   does not retire the claim: staged IO remains in `C`.
+2. A dedicated coarse timer's bounded account-filtered index scan discovers the
+   transfer, then the canonical IO ledger exact-proves it. Once current liquid
+   ICP covers the whole fresh `B/C` quote, Stream pays the exact source Account,
+   economically retires the staged IO, and exact-sweeps it into the formal
+   reserve. A no-argument permissionless call only coalesces a near-term wake.
 3. Once per exact SNS reward event, the Stream Manager converts eligible
    proposal-bearing reward shares into policy credit. A genuinely
    no-proposal event uses the defined eligible-stake fallback; an ambiguous
@@ -75,14 +76,16 @@ Root, and Governance services:
    read model and provides an authenticated redemption client, but neither is
    monetary authority.
 
-Unsupported direct transfers create no protocol claim and are not
-automatically refunded.
+Transfers into the semantic redemption staging Account are the supported
+redemption intent. Unsupported/tiny staging transfers create no payout or
+automatic refund but remain claim-bearing; other unsolicited transfers create
+no protocol claim.
 
 ## Components and boundaries
 
 | Component | Role | Canonical dependencies | Authority |
 | --- | --- | --- | --- |
-| [Stream Manager](canisters/io_stream_manager/README.md) | Prepared ICRC-1 push redemption, IO/liquid-ICP reserves, structural synchronization, daily entitlement accounting, proof-bound NNS receipts, and backed settlement | SNS IO Ledger, ICP Ledger, SNS Root/Governance, NNS Manager | SNS Governance controls lifecycle; users authorize only their exact source Account push |
+| [Stream Manager](canisters/io_stream_manager/README.md) | Semantic-staging redemption, IO/liquid-ICP reserves, structural synchronization, daily entitlement accounting, proof-bound NNS receipts, and backed settlement | SNS IO Ledger/Index, ICP Ledger, SNS Root/Governance, NNS Manager | SNS Governance controls lifecycle; any caller may prompt bounded work but the proved source Account fixes the payout |
 | [NNS Neuron Manager](canisters/io_nns_neuron_manager/README.md) | Bootstrapped Dynamic-neuron partition, protected-neuron commands, Jupiter/TwoYear replenishment, semantic maturity Accounts, and generation-based unwind children | NNS Governance, ICP Ledger, Stream Manager, Jupiter source Account | Executes as the existing protected-neuron controller; SNS Governance controls reviewed entry points and Stream Manager controls reconciliation/two-week paths |
 | [Historian](canisters/io_historian/README.md) | Bounded monitoring, module/controller topology, account histories, reconciliation, and public read models | Ledgers, Index, SNS Root/Governance, both managers, public NNS neuron info | Install/upgrade configuration only; production API is read-only and non-authoritative |
 | [Frontend](canisters/frontend/README.md) | Certified dashboard assets and authenticated redemption UX | Historian for dashboard reads; IO Ledger and Stream Manager for redemption | Advisory client only; canisters recompute all monetary facts |
@@ -95,7 +98,7 @@ observation only. The Historian never fills a missing observation with zero.
 
 ## Frozen design, launch constraints, and open configuration
 
-The replacement monetary design includes authenticated prepared ICRC-1 push redemption,
+The replacement monetary design includes semantic-staging ICRC-1 redemption,
 canonical-ledger supply and balance authority, `B=L+P+U+T` claim backing with
 an excluded 10-ICP Dynamic-neuron anchor, Jupiter/two-week shared 40/60,
 semantic Account balances as custody authority, exact proof of immutable
@@ -125,7 +128,7 @@ algorithms unfinished.
 
 IO deliberately chooses:
 
-- explicit authenticated intent over scanner-inferred intent;
+- explicit intent encoded by authenticated commands or purpose-specific Account topology;
 - canonical balances over replicated balance accounting;
 - one active operation over reservation and concurrency algebra;
 - typed operation state over optional-field state bags;
@@ -136,7 +139,7 @@ IO deliberately chooses:
 
 When a monetary path is replaced, the superseded path is deleted rather than
 retained in parallel. Unsupported activity does not become a launch feature by
-default. Reintroducing scanners, generic liability systems, reconciliation or
+default. Reintroducing generic scanners, liability systems, reconciliation or
 entitlement queues, ballot reconstruction, cohort accounting, or general
 operation queues requires demonstrated need and explicit architectural
 justification under the
@@ -181,12 +184,13 @@ same net claim credit. Permanent capital is outside `B`, so its fresh delivery
 fee creates no liability. IO issuance is an explicit reserve transfer, not
 application minting.
 
-Redemption freezes a `B/C` quote without reserving ICP. Claim-rate
-monotonicity keeps an earlier valid quote economically conservative. The user
-then performs one exact ICRC-1 push to reserve. Canonical proof of that block
-removes the IO from claim-bearing circulation and creates a durable payout
-obligation. Unexpectedly missing liquid ICP is an invariant-breach recovery
-state after the push, not a normal admission failure or cancellation.
+Redemption staging is not reserve, so the user's transfer remains in `C` and
+its ordinary IO fee is not reconstructed. Index discovery is non-authoritative;
+canonical block proof, a fresh coherent `B/C` snapshot, matching launch fees,
+and `L >= gross` are required before payout intent exists. Payout success
+reduces `B` by gross and temporarily excludes exactly the staged amount from
+`C`; the exact staging-to-reserve sweep replaces that temporary exclusion with
+the same physical supply/reserve change. Normal illiquidity creates no debt.
 
 `A_backing` is structurally active ordinary SNS IO; `A_reward` is its currently
 prospective reward-eligible subset. Rewards require pooled principal to cover
@@ -200,7 +204,7 @@ uses eligible stake, and ambiguous skipped events receive no synthetic credit.
 ## Lifecycle and readiness
 
 The value-moving Stream and NNS Manager canisters install and return from
-upgrade in `Paused`. `Paused` blocks new preparation; it does not erase an
+upgrade in `Paused`. `Paused` blocks new redemption discovery/activation; it does not erase an
 already immutable or in-flight monetary operation, which remains resumable.
 Activation is an SNS-governed transition whose asynchronous preflight binds the
 reviewed configuration to actual canister, ledger, Governance, fee, supply,
@@ -239,7 +243,9 @@ an owed payout waiting for invariant recovery, and durable `Stuck` state.
 accepts only an exact canonical ledger block for the active proof slot; it is
 not a manual balance rewrite or debug completion path. Stream proof slots cover
 redemption, the paired liquid claim receipt, pooled top-up, and reward
-transfers. The NNS Manager similarly proves exact outgoing maturity, parent,
+transfers. Redemption proof is restricted to SNS Governance as reviewed
+emergency recovery; existing flow-specific proof authorization remains narrow.
+The NNS Manager similarly proves exact outgoing maturity, parent,
 and cohort effects. It does not prove the provenance of fungible ICP already
 held in a semantic Account. Upgrades preserve durable operation state and force
 reviewed reactivation while allowing immutable work to resume.

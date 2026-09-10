@@ -44,14 +44,8 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires pinned real SNS ledger Wasm and POCKET_IC_BIN"]
-    fn real_sns_icrc1_direct_reserve_push() {
-        crate::sns_ledger_index::run_icrc1_direct_reserve_push(false);
-    }
-
-    #[test]
     #[ignore = "requires pinned real SNS ledger Wasm, stream Wasm, and POCKET_IC_BIN"]
-    fn installed_stream_real_sns_icrc1_push_redemption() {
+    fn installed_stream_real_sns_semantic_staging_redemption() {
         crate::sns_ledger_index::run_installed_stream_redemption(false);
     }
 

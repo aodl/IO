@@ -382,19 +382,9 @@ pub struct AccountHistoryPageOutcome {
 
 impl AccountHistoryScanState {
     pub fn next_request_start(&self) -> Option<BlockIndex> {
-        match self.cursor.order {
-            Some(AccountHistoryPageOrder::Descending) => {
-                if self.cursor.latest_cursor.is_some() && self.cursor.backfill_complete {
-                    None
-                } else {
-                    self.cursor.oldest_cursor
-                }
-            }
-            Some(AccountHistoryPageOrder::Ascending) | None => self
-                .cursor
-                .latest_cursor
-                .map(|block| BlockIndex(block.0.saturating_add(1))),
-        }
+        (!self.cursor.backfill_complete)
+            .then_some(self.cursor.oldest_cursor)
+            .flatten()
     }
 
     pub fn record_unreadable(&self, message: impl Into<String>) -> Self {
@@ -436,64 +426,48 @@ impl AccountHistoryScanState {
         }
 
         let page_ids = page.account_history_ids();
-        let observed_order = page
-            .page_order
-            .or_else(|| detect_account_history_page_order_from_ids(&page_ids));
-        let order = match (self.cursor.order, observed_order) {
-            (
-                Some(AccountHistoryPageOrder::Ascending),
-                Some(AccountHistoryPageOrder::Descending),
-            ) if page_ids.len() > 1
-                && self.cursor.latest_cursor.is_some()
-                && self.cursor.latest_cursor == self.cursor.oldest_cursor
-                && self.cursor.backfill_complete =>
-            {
-                AccountHistoryPageOrder::Descending
-            }
-            (Some(existing), Some(observed)) if existing != observed && page_ids.len() > 1 => {
-                next.status.invariant_broken_count =
-                    next.status.invariant_broken_count.saturating_add(1);
-                return Err(AccountHistoryFault::NonMonotonicPage(page_ids[1]));
-            }
-            (Some(existing), _) => existing,
-            (None, Some(observed)) => observed,
-            (None, None) => {
-                let single = page_ids.first().copied();
-                if single
-                    .zip(self.cursor.oldest_cursor.or(self.cursor.latest_cursor))
-                    .map(|(tx_id, cursor)| tx_id < cursor)
-                    .unwrap_or(false)
-                {
-                    AccountHistoryPageOrder::Descending
-                } else {
-                    AccountHistoryPageOrder::Ascending
-                }
-            }
-        };
-        next.cursor.order = Some(order);
+        if self.cursor.order == Some(AccountHistoryPageOrder::Ascending)
+            || (page.page_order == Some(AccountHistoryPageOrder::Ascending) && page_ids.len() > 1)
+        {
+            next.status.invariant_broken_count =
+                next.status.invariant_broken_count.saturating_add(1);
+            return Err(AccountHistoryFault::NonMonotonicPage(
+                page_ids.first().copied().unwrap_or(BlockIndex(0)),
+            ));
+        }
+        next.cursor.order = Some(AccountHistoryPageOrder::Descending);
 
-        if order == AccountHistoryPageOrder::Ascending {
-            if let (Some(requested), Some(tip)) =
-                (requested_start, page.index_tip.or(page.num_blocks_synced))
-            {
-                if tip < requested {
-                    next.status.lag_suspected = true;
-                    next.status.last_error = Some(format!(
-                        "index lag: requested {}, tip {}",
-                        requested.0, tip.0
-                    ));
-                    return Err(AccountHistoryFault::IndexLag {
-                        requested,
-                        tip: Some(tip),
-                    });
-                }
+        if let (Some(committed), Some(tip)) = (
+            self.cursor.latest_cursor,
+            page.index_tip.or(page.num_blocks_synced),
+        ) {
+            if tip < committed {
+                next.status.lag_suspected = true;
+                next.status.last_error = Some(format!(
+                    "index lag: committed watermark {}, tip {}",
+                    committed.0, tip.0
+                ));
+                return Err(AccountHistoryFault::IndexLag {
+                    requested: committed,
+                    tip: Some(tip),
+                });
             }
         }
 
-        validate_account_history_ids(&page_ids, order)?;
+        validate_account_history_ids(&page_ids, AccountHistoryPageOrder::Descending)?;
+        if let (Some(requested), Some(first)) = (requested_start, page_ids.first()) {
+            if *first >= requested {
+                return Err(AccountHistoryFault::NonProgressingPage(*first));
+            }
+        }
 
-        let newest = page_ids.iter().copied().max();
-        next.status.last_observed_newest_tx_id = newest.or(next.status.last_observed_newest_tx_id);
+        let newest = page_ids.first().copied();
+        let captured_head = if requested_start.is_none() {
+            newest.or(self.cursor.latest_cursor)
+        } else {
+            self.status.last_observed_newest_tx_id
+        };
+        next.status.last_observed_newest_tx_id = captured_head;
 
         if page.has_unsupported_transactions {
             next.status.scan_incomplete = true;
@@ -501,104 +475,50 @@ impl AccountHistoryScanState {
                 Some("account history page contained unsupported transaction entries".to_string());
         }
 
+        let committed = self.cursor.latest_cursor;
+        let progressed_ids = page_ids
+            .iter()
+            .copied()
+            .take_while(|block| committed.is_none_or(|watermark| *block > watermark))
+            .collect::<Vec<_>>();
+        let reached_committed =
+            committed.is_some_and(|watermark| page_ids.iter().any(|block| *block <= watermark));
         let short_page = page_ids.len() < requested_limit as usize;
-        let (phase, mut process): (AccountHistoryScanPhase, Vec<IndexTransaction>) = match order {
-            AccountHistoryPageOrder::Ascending => {
-                let mut skipped_cursor = false;
-                let mut progressed_ids = Vec::new();
-                for block_index in &page_ids {
-                    if let Some(cursor) = self.cursor.latest_cursor {
-                        if *block_index == cursor && !skipped_cursor {
-                            skipped_cursor = true;
-                            continue;
-                        }
-                        if *block_index <= cursor {
-                            return Err(AccountHistoryFault::NonProgressingPage(*block_index));
-                        }
-                    }
-                    progressed_ids.push(*block_index);
-                }
-                if let Some(max_seen) = progressed_ids.iter().copied().max() {
-                    next.cursor.latest_cursor = Some(max_seen);
-                    next.cursor.oldest_cursor = next.cursor.oldest_cursor.or(Some(max_seen));
-                }
-                next.cursor.backfill_complete = short_page && !page.has_unsupported_transactions;
-                let process = page
-                    .transactions
-                    .iter()
-                    .filter(|tx| progressed_ids.contains(&tx.block_index))
-                    .cloned()
-                    .collect();
-                (AccountHistoryScanPhase::AscendingForward, process)
-            }
-            AccountHistoryPageOrder::Descending => {
-                if let (Some(latest), true) =
-                    (self.cursor.latest_cursor, self.cursor.backfill_complete)
-                {
-                    let mut progressed_ids = Vec::new();
-                    for block_index in &page_ids {
-                        if *block_index > latest {
-                            progressed_ids.push(*block_index);
-                        } else {
-                            break;
-                        }
-                    }
-                    if progressed_ids.is_empty() && !page.has_unsupported_transactions {
-                        next.status.scan_incomplete = false;
-                    }
-                    if let Some(max_seen) = progressed_ids.iter().copied().max() {
-                        next.cursor.latest_cursor = Some(latest.max(max_seen));
-                    }
-                    let process = page
-                        .transactions
-                        .iter()
-                        .filter(|tx| progressed_ids.contains(&tx.block_index))
-                        .cloned()
-                        .collect();
-                    (AccountHistoryScanPhase::DescendingHead, process)
-                } else {
-                    let mut progressed_ids = Vec::new();
-                    for block_index in &page_ids {
-                        match self.cursor.oldest_cursor {
-                            Some(oldest) if *block_index >= oldest => continue,
-                            _ => progressed_ids.push(*block_index),
-                        }
-                    }
-                    if progressed_ids.is_empty() && !page_ids.is_empty() && !short_page {
-                        return Err(AccountHistoryFault::NonProgressingPage(
-                            *page_ids.last().expect("non-empty"),
-                        ));
-                    }
-                    if let Some(max_seen) = progressed_ids.iter().copied().max() {
-                        next.cursor.latest_cursor = Some(
-                            next.cursor
-                                .latest_cursor
-                                .map_or(max_seen, |old| old.max(max_seen)),
-                        );
-                    }
-                    if let Some(min_seen) = progressed_ids.iter().copied().min() {
-                        next.cursor.oldest_cursor = Some(
-                            next.cursor
-                                .oldest_cursor
-                                .map_or(min_seen, |old| old.min(min_seen)),
-                        );
-                    }
-                    if (short_page || page_ids.is_empty()) && !page.has_unsupported_transactions {
-                        next.cursor.backfill_complete = true;
-                        next.status.scan_incomplete = false;
-                    } else {
-                        next.status.scan_incomplete = true;
-                    }
-                    let process = page
-                        .transactions
-                        .iter()
-                        .filter(|tx| progressed_ids.contains(&tx.block_index))
-                        .cloned()
-                        .collect();
-                    (AccountHistoryScanPhase::DescendingBackfill, process)
-                }
-            }
+        if committed.is_some() && short_page && !reached_committed && !page_ids.is_empty() {
+            return Err(AccountHistoryFault::NonProgressingPage(
+                *page_ids.last().expect("non-empty"),
+            ));
+        }
+        let traversal_complete = reached_committed || short_page;
+        if traversal_complete {
+            next.cursor.latest_cursor = captured_head.or(committed);
+            next.cursor.oldest_cursor = None;
+            next.cursor.backfill_complete = true;
+            next.status.scan_incomplete = false;
+        } else {
+            let oldest =
+                page_ids
+                    .last()
+                    .copied()
+                    .ok_or(AccountHistoryFault::NonProgressingPage(
+                        requested_start.unwrap_or(BlockIndex(0)),
+                    ))?;
+            next.cursor.latest_cursor = committed;
+            next.cursor.oldest_cursor = Some(oldest);
+            next.cursor.backfill_complete = false;
+            next.status.scan_incomplete = true;
+        }
+        let phase = if requested_start.is_none() {
+            AccountHistoryScanPhase::DescendingHead
+        } else {
+            AccountHistoryScanPhase::DescendingBackfill
         };
+        let mut process = page
+            .transactions
+            .iter()
+            .filter(|tx| progressed_ids.contains(&tx.block_index))
+            .cloned()
+            .collect::<Vec<_>>();
 
         process.sort_by_key(|tx| tx.block_index);
 
@@ -1104,7 +1024,8 @@ pub fn map_icrc_index_result(
                 .map(|tx| tx.block_index)
                 .collect::<Vec<_>>();
             let last_seen_block = transactions.iter().map(|tx| tx.block_index).max();
-            let page_order = detected_page_order_or_error(&raw_transaction_ids)?;
+            detected_page_order_or_error(&raw_transaction_ids)?;
+            let page_order = Some(AccountHistoryPageOrder::Descending);
             let result = IndexScanResult {
                 transactions,
                 raw_transaction_ids,
@@ -1237,7 +1158,8 @@ pub fn map_icrc_index_ng_result(
                 }
             }
             let last_seen_block = raw_transaction_ids.iter().copied().max();
-            let page_order = detected_page_order_or_error(&raw_transaction_ids)?;
+            detected_page_order_or_error(&raw_transaction_ids)?;
+            let page_order = Some(AccountHistoryPageOrder::Descending);
             let result = IndexScanResult {
                 transactions,
                 raw_transaction_ids,
@@ -2357,7 +2279,7 @@ mod tests {
     }
 
     #[test]
-    fn account_history_scan_detects_page_order_and_single_item_conservatively() {
+    fn account_history_scan_uses_configured_newest_first_contract_for_singletons() {
         assert_eq!(
             detect_account_history_page_order(&scan_page(&[1, 3], None).transactions),
             Some(AccountHistoryPageOrder::Ascending)
@@ -2376,7 +2298,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             outcome.next_state.cursor.order,
-            Some(AccountHistoryPageOrder::Ascending)
+            Some(AccountHistoryPageOrder::Descending)
         );
     }
 
@@ -2385,7 +2307,7 @@ mod tests {
         let state = AccountHistoryScanState::default();
         let page = scan_page(&[30, 20, 10], Some(AccountHistoryPageOrder::Descending));
         let outcome = state.observe_page(&page, None, 3, 1, 10, Some(1)).unwrap();
-        assert_eq!(outcome.phase, AccountHistoryScanPhase::DescendingBackfill);
+        assert_eq!(outcome.phase, AccountHistoryScanPhase::DescendingHead);
         assert_eq!(
             outcome
                 .transactions_chronological
@@ -2394,10 +2316,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![BlockIndex(10), BlockIndex(20), BlockIndex(30)]
         );
-        assert_eq!(
-            outcome.next_state.cursor.latest_cursor,
-            Some(BlockIndex(30))
-        );
+        assert_eq!(outcome.next_state.cursor.latest_cursor, None);
         assert_eq!(
             outcome.next_state.cursor.oldest_cursor,
             Some(BlockIndex(10))
@@ -2409,10 +2328,7 @@ mod tests {
             .next_state
             .observe_page(&short, Some(BlockIndex(10)), 3, 1, 10, Some(2))
             .unwrap();
-        assert_eq!(
-            backfilled.next_state.cursor.oldest_cursor,
-            Some(BlockIndex(7))
-        );
+        assert_eq!(backfilled.next_state.cursor.oldest_cursor, None);
         assert!(backfilled.next_state.cursor.backfill_complete);
 
         let head = scan_page(&[40, 35, 30], Some(AccountHistoryPageOrder::Descending));
@@ -2436,17 +2352,20 @@ mod tests {
     }
 
     #[test]
-    fn account_history_single_item_bootstrap_can_switch_to_descending_order() {
+    fn account_history_single_item_bootstrap_stays_on_newest_first_contract() {
         let first = AccountHistoryScanState::default()
             .observe_page(&scan_page(&[8], None), None, 10, 1, 10, Some(1))
             .unwrap()
             .next_state;
-        assert_eq!(first.cursor.order, Some(AccountHistoryPageOrder::Ascending));
+        assert_eq!(
+            first.cursor.order,
+            Some(AccountHistoryPageOrder::Descending)
+        );
 
         let switched = first
             .observe_page(
-                &scan_page(&[10, 9], Some(AccountHistoryPageOrder::Descending)),
-                Some(BlockIndex(9)),
+                &scan_page(&[10, 9, 8], Some(AccountHistoryPageOrder::Descending)),
+                None,
                 10,
                 1,
                 10,
@@ -2474,7 +2393,175 @@ mod tests {
     }
 
     #[test]
-    fn ascending_scan_allows_gaps_and_skips_repeated_cursor_once() {
+    fn newest_first_singleton_commits_head_and_later_head_scan_discovers_newer_ids() {
+        let first = AccountHistoryScanState::default()
+            .observe_page(&scan_page(&[8], None), None, 32, 1, 1, Some(1))
+            .unwrap();
+        assert_eq!(
+            first.next_state.cursor.order,
+            Some(AccountHistoryPageOrder::Descending)
+        );
+        assert_eq!(first.next_state.cursor.latest_cursor, Some(BlockIndex(8)));
+        assert!(first.next_state.cursor.backfill_complete);
+        assert_eq!(first.next_state.next_request_start(), None);
+
+        let later = first
+            .next_state
+            .observe_page(&scan_page(&[10, 9, 8], None), None, 32, 1, 1, Some(2))
+            .unwrap();
+        assert_eq!(
+            later
+                .transactions_chronological
+                .iter()
+                .map(|tx| tx.block_index)
+                .collect::<Vec<_>>(),
+            vec![BlockIndex(9), BlockIndex(10)]
+        );
+        assert_eq!(later.next_state.cursor.latest_cursor, Some(BlockIndex(10)));
+    }
+
+    #[test]
+    fn newest_first_full_head_page_retains_committed_watermark_until_gap_is_closed() {
+        let state = AccountHistoryScanState {
+            cursor: AccountHistoryCursor {
+                order: Some(AccountHistoryPageOrder::Descending),
+                latest_cursor: Some(BlockIndex(100)),
+                oldest_cursor: Some(BlockIndex(100)),
+                backfill_complete: true,
+            },
+            status: AccountHistoryScanStatus::default(),
+        };
+        let ids = (110_u64..=141).rev().collect::<Vec<_>>();
+        let first = state
+            .observe_page(&scan_page(&ids, None), None, 32, 1, 1, Some(1))
+            .unwrap();
+        assert_eq!(first.next_state.cursor.latest_cursor, Some(BlockIndex(100)));
+        assert_eq!(first.next_state.cursor.oldest_cursor, Some(BlockIndex(110)));
+        assert!(!first.next_state.cursor.backfill_complete);
+        assert_eq!(first.next_state.next_request_start(), Some(BlockIndex(110)));
+
+        let second = first
+            .next_state
+            .observe_page(
+                &scan_page(&(100_u64..=109).rev().collect::<Vec<_>>(), None),
+                Some(BlockIndex(110)),
+                32,
+                1,
+                1,
+                Some(2),
+            )
+            .unwrap();
+        assert_eq!(
+            second.next_state.cursor.latest_cursor,
+            Some(BlockIndex(141))
+        );
+        assert!(second.next_state.cursor.backfill_complete);
+        assert_eq!(second.next_state.next_request_start(), None);
+    }
+
+    #[test]
+    fn newest_first_catch_up_survives_queue_pressure_restarts_and_new_head_arrivals() {
+        use std::collections::BTreeSet;
+
+        let mut state = AccountHistoryScanState {
+            cursor: AccountHistoryCursor {
+                order: Some(AccountHistoryPageOrder::Descending),
+                latest_cursor: Some(BlockIndex(100)),
+                oldest_cursor: None,
+                backfill_complete: true,
+            },
+            status: AccountHistoryScanStatus::default(),
+        };
+        let mut queue = BTreeSet::new();
+        let mut paid = BTreeSet::new();
+        let mut considered = Vec::new();
+        let mut history = (100_u64..=170).collect::<Vec<_>>();
+
+        for invocation in 0..10 {
+            while queue.len() > 32 {
+                let block = *queue.first().unwrap();
+                queue.remove(&block);
+                assert!(paid.insert(block));
+            }
+            let available = 64 - queue.len();
+            if available < 32 {
+                continue;
+            }
+            let start = state.next_request_start();
+            let mut ids = history
+                .iter()
+                .copied()
+                .filter(|id| start.is_none_or(|cursor| *id < cursor.0))
+                .collect::<Vec<_>>();
+            ids.sort_by_key(|id| std::cmp::Reverse(*id));
+            ids.truncate(32);
+            let outcome = state
+                .observe_page(&scan_page(&ids, None), start, 32, 1, 1, Some(invocation))
+                .unwrap();
+            for tx in &outcome.transactions_chronological {
+                assert!(!considered.contains(&tx.block_index.0));
+                considered.push(tx.block_index.0);
+                if tx.block_index.0 % 5 != 0 {
+                    assert!(queue.insert(tx.block_index.0));
+                }
+            }
+            state = Decode!(
+                &Encode!(&outcome.next_state).unwrap(),
+                AccountHistoryScanState
+            )
+            .unwrap();
+            if invocation == 0 {
+                history.extend(171_u64..=175);
+            }
+            if state.cursor.latest_cursor == Some(BlockIndex(175)) {
+                break;
+            }
+        }
+        while let Some(block) = queue.pop_first() {
+            assert!(paid.insert(block));
+        }
+        considered.sort_unstable();
+        assert_eq!(considered, (101_u64..=175).collect::<Vec<_>>());
+        assert_eq!(state.cursor.latest_cursor, Some(BlockIndex(175)));
+        assert!(state.cursor.backfill_complete);
+        assert_eq!(
+            paid.len(),
+            60,
+            "interspersed non-candidates were considered but not paid"
+        );
+    }
+
+    #[test]
+    fn newest_first_exclusive_cursor_rejects_duplicate_page_without_advancing() {
+        let state = AccountHistoryScanState {
+            cursor: AccountHistoryCursor {
+                order: Some(AccountHistoryPageOrder::Descending),
+                latest_cursor: Some(BlockIndex(100)),
+                oldest_cursor: Some(BlockIndex(139)),
+                backfill_complete: false,
+            },
+            status: AccountHistoryScanStatus {
+                last_observed_newest_tx_id: Some(BlockIndex(170)),
+                ..AccountHistoryScanStatus::default()
+            },
+        };
+        assert!(matches!(
+            state.observe_page(
+                &scan_page(&[139, 138], None),
+                Some(BlockIndex(139)),
+                32,
+                1,
+                1,
+                None,
+            ),
+            Err(AccountHistoryFault::NonProgressingPage(BlockIndex(139)))
+        ));
+        assert_eq!(state.cursor.latest_cursor, Some(BlockIndex(100)));
+        assert_eq!(state.cursor.oldest_cursor, Some(BlockIndex(139)));
+    }
+
+    #[test]
+    fn ascending_scan_state_is_rejected_for_sns_monetary_history() {
         let state = AccountHistoryScanState {
             cursor: AccountHistoryCursor {
                 order: Some(AccountHistoryPageOrder::Ascending),
@@ -2484,28 +2571,17 @@ mod tests {
             },
             status: AccountHistoryScanStatus::default(),
         };
-        let outcome = state
-            .observe_page(
+        assert!(matches!(
+            state.observe_page(
                 &scan_page(&[10, 25, 40], Some(AccountHistoryPageOrder::Ascending)),
                 Some(BlockIndex(11)),
                 10,
                 1,
                 10,
                 None,
-            )
-            .unwrap();
-        assert_eq!(
-            outcome
-                .transactions_chronological
-                .iter()
-                .map(|tx| tx.block_index)
-                .collect::<Vec<_>>(),
-            vec![BlockIndex(25), BlockIndex(40)]
-        );
-        assert_eq!(
-            outcome.next_state.cursor.latest_cursor,
-            Some(BlockIndex(40))
-        );
+            ),
+            Err(AccountHistoryFault::NonMonotonicPage(_))
+        ));
     }
 
     #[test]
@@ -2513,7 +2589,7 @@ mod tests {
         let state = AccountHistoryScanState::default();
         assert!(matches!(
             state.observe_page(
-                &scan_page(&[2, 2], Some(AccountHistoryPageOrder::Ascending)),
+                &scan_page(&[2, 2], Some(AccountHistoryPageOrder::Descending)),
                 None,
                 10,
                 1,
@@ -2540,7 +2616,7 @@ mod tests {
                 10,
                 None,
             ),
-            Err(AccountHistoryFault::NonProgressingPage(BlockIndex(9)))
+            Err(AccountHistoryFault::NonMonotonicPage(_))
         ));
         assert_eq!(seeded.cursor.latest_cursor, Some(BlockIndex(10)));
     }
@@ -2551,22 +2627,30 @@ mod tests {
         assert_eq!(unreadable.status.latest_page_unreadable_count, 1);
         assert_eq!(unreadable.cursor.latest_cursor, None);
 
-        let state = AccountHistoryScanState::default();
+        let state = AccountHistoryScanState {
+            cursor: AccountHistoryCursor {
+                order: Some(AccountHistoryPageOrder::Descending),
+                latest_cursor: Some(BlockIndex(5)),
+                oldest_cursor: None,
+                backfill_complete: true,
+            },
+            status: AccountHistoryScanStatus::default(),
+        };
         let lagged = IndexScanResult {
             index_tip: Some(BlockIndex(4)),
             ..scan_page(&[5], Some(AccountHistoryPageOrder::Ascending))
         };
         assert!(matches!(
-            state.observe_page(&lagged, Some(BlockIndex(5)), 10, 1, 10, None),
+            state.observe_page(&lagged, None, 10, 1, 10, None),
             Err(AccountHistoryFault::IndexLag {
                 requested: BlockIndex(5),
                 tip: Some(BlockIndex(4))
             })
         ));
 
-        let outcome = state
+        let outcome = AccountHistoryScanState::default()
             .observe_page(
-                &scan_page(&[1, 2], Some(AccountHistoryPageOrder::Ascending)),
+                &scan_page(&[2, 1], Some(AccountHistoryPageOrder::Descending)),
                 None,
                 2,
                 2,
@@ -2690,6 +2774,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(result.account_balance_e8s, Some(123));
+        assert_eq!(result.page_order, Some(AccountHistoryPageOrder::Descending));
         assert_eq!(result.transactions[0].block_index, BlockIndex(7));
         assert_eq!(result.transactions[0].transaction.from, Some(from));
         assert_eq!(result.transactions[0].transaction.to, Some(to));
@@ -2701,6 +2786,22 @@ mod tests {
             result.transactions[0].transaction.operation_kind,
             LedgerOperationKind::Transfer
         );
+    }
+
+    #[test]
+    fn empty_index_ng_page_retains_known_newest_first_contract() {
+        let result = map_icrc_index_ng_result(Ok(IcrcIndexNgGetTransactionsResult {
+            balance: Nat::from(0_u64),
+            transactions: vec![],
+            oldest_tx_id: None,
+        }))
+        .unwrap();
+        assert_eq!(result.page_order, Some(AccountHistoryPageOrder::Descending));
+        let outcome = AccountHistoryScanState::default()
+            .observe_page(&result, None, 32, 1, 1, Some(1))
+            .unwrap();
+        assert!(outcome.next_state.cursor.backfill_complete);
+        assert_eq!(outcome.next_state.next_request_start(), None);
     }
 
     #[test]
@@ -2810,7 +2911,7 @@ mod tests {
 
         assert!(outcome.transactions_chronological.is_empty());
         assert_eq!(outcome.next_state.cursor.latest_cursor, Some(BlockIndex(7)));
-        assert!(outcome.next_state.status.scan_incomplete);
+        assert!(!outcome.next_state.status.scan_incomplete);
     }
 
     #[test]
@@ -2834,8 +2935,8 @@ mod tests {
             .observe_page(&result, None, 10, 1, 5, Some(99))
             .unwrap();
 
-        assert!(!outcome.next_state.cursor.backfill_complete);
-        assert!(outcome.next_state.status.scan_incomplete);
+        assert!(outcome.next_state.cursor.backfill_complete);
+        assert!(!outcome.next_state.status.scan_incomplete);
     }
 
     #[test]
@@ -3513,20 +3614,21 @@ mod tests {
     }
 
     #[test]
-    fn local_sns_redemption_return_is_user_to_reserve_transfer() {
-        let reserve = Account::new(principal(), None);
-        let redemption_return = LedgerTransferRequest {
-            from_subaccount: None,
+    fn local_sns_redemption_sweep_is_staging_to_reserve_transfer() {
+        let owner = principal();
+        let reserve = Account::new(owner, None);
+        let redemption_sweep = LedgerTransferRequest {
+            from_subaccount: Some(Subaccount([43; 32])),
             to: reserve.clone(),
-            amount_e8s: 100_000_000,
+            amount_e8s: 99_990_000,
             fee_e8s: Some(10_000),
-            memo: Some(Memo::from("IO local redemption return")),
+            memo: Some(Memo::from("IO local redemption sweep")),
             created_at_time: Some(2_000),
         };
-        let arg = IcrcTransferArg::from(redemption_return);
-        assert_eq!(arg.from_subaccount, None);
+        let arg = IcrcTransferArg::from(redemption_sweep);
+        assert_eq!(arg.from_subaccount, Some(vec![43; 32]));
         assert_eq!(arg.to, reserve.to_icrc_account());
-        assert_eq!(arg.amount, Nat::from(100_000_000_u128));
+        assert_eq!(arg.amount, Nat::from(99_990_000_u128));
     }
 
     #[test]

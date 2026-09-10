@@ -7,6 +7,7 @@
   prelaunch stable migration compatibility
 - Partially superseded by: `adr-anchored-dynamic-backing.md` for redemption
   transport, Dynamic-parent bootstrap/accounting, cohorts, and scheduling
+- Redemption superseded by: `adr-semantic-redemption-staging.md`
 
 ## Context
 
@@ -27,11 +28,12 @@ destination. Callers never choose arbitrary monetary destinations and never mark
 work complete.
 
 The stream manager serializes all monetary work in one typed active operation:
-`Redemption` or `LiquidReceipt`. The replacement redemption prepares an exact
-caller/source/amount/fee/memo quote, proves the caller's ICRC-1 push directly
-into reserve, then persists an unconditional at-most-once ICP payout obligation
-to the same Account. There is no allowance, `transfer_from`, scanner, intake
-Account, IO return leg, or rejected-redemption refund.
+`Redemption` or `LiquidReceipt`. Redemption intent is an ordinary transfer into
+one fixed staging Account. A bounded account-filtered index scan discovers the
+block; canonical ledger proof supplies its source and amount. Only sufficient
+current liquidity freezes a fresh quote and payout intent. Payout success is
+followed by an exact staging-to-reserve sweep. There is no allowance, pull,
+special memo, caller block assertion, or rejected-redemption refund.
 
 The NNS manager owns NNS commands and proof. It serializes immediate work and has
 fixed slots for two-year maturity, two-week maturity, and one unwind child. The

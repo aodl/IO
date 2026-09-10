@@ -2,9 +2,11 @@
 
 Required stream coverage installs the Stream Manager beside a pinned real SNS
 ICRC ledger and a canonical local ICP ICRC-1 ledger. It proves Paused install,
-readiness, prepared exact ICRC-1 push into reserve, durable payout, idempotency,
-upgrades, stale callbacks and exact stuck-transfer proofs. No approval,
-allowance, spender authority or `transfer_from` is part of redemption.
+readiness, direct transfer into the fixed semantic staging Account, bounded
+index discovery, canonical ledger proof, current-rate liquidity admission,
+exact payout and reserve sweep, idempotency, upgrades, stale callbacks and
+exact stuck-transfer proofs. No approval, allowance, spender authority or
+caller-supplied settlement block is part of redemption.
 
 Required NNS coverage installs the manager as the local neuron controller and tests Jupiter, direct maturity and unwind children with pinned artifacts. The selector-bound `2026-09-03-270dcf3-anchored-dynamic` package separately completes source-built official SNS evidence; its official-SNS, exact-NNS and controlled-IO layers remain distinct and do not authorize mocks as proof of live-local observations.
 

@@ -28,9 +28,12 @@ not authorize mainnet work.
 7. More than 32 historical structural generations complete without a product
    cap. One aggregate child is created per generation, and an overdue or
    ambiguous ready child is serviced before another Split.
-8. Redemption prepares an exact monotone-rate quote, accepts one exact timely
-   ICRC-1 push into reserve, persists `PayoutOwed`, and pays ICP exactly once.
-   Unexpected delayed liquidity preserves the obligation until child recovery.
+8. Redemption receives an ordinary memo-free ICRC-1 transfer into one semantic
+   staging Account and keeps it in `C`. A bounded index scan discovers the
+   block, the canonical ledger exact-proves it, and Stream waits without debt
+   until liquid ICP covers a fresh monotone-rate quote. Payout goes to the exact
+   source Account once; paid-but-unswept `X` is excluded from `C` once, and the
+   exact reserve sweep replaces that exclusion without changing post-payout `C`.
 9. Successful reward IO transfer plus failed SNS refresh still increases
    `A_backing` through the authoritative staking-account ledger balance.
 10. Upgrades and lost callbacks at every submitted/proved phase preserve exact

@@ -166,10 +166,13 @@ Run local canister calls against the local SNS ledger/index principals recorded 
 
 IO issuance is resolved conservatively as a transfer from a protocol reserve account/subaccount funded after SNS finalization and before activation by an executed SNS-governance treasury-transfer proposal.
 
-Redemption uses an exact prepared ICRC-1 push into the protocol reserve. The
-caller sends the prepared amount and memo, then supplies the block for exact
-proof; no allowance or spender authority exists. A proved push creates a
-durable ICP payout obligation. IO must not assume arbitrary post-launch minting
+Redemption uses an ordinary ICRC-1 transfer into the fixed semantic staging
+Account. That balance remains claim-bearing. The bounded account-history worker
+discovers candidates through the IO index, proves each exact canonical ledger
+block, freezes the current total-backing B/C quote only when liquid ICP is
+sufficient, pays the proved source Account, and sweeps the staged IO to reserve.
+The index is discovery-only and no allowance or spender authority exists. IO
+must not assume arbitrary post-launch minting
 unless final SNS ledger configuration and governance policy explicitly support
 it and a later audited milestone changes this model.
 
@@ -178,17 +181,17 @@ The local rehearsal must prove:
 - the protocol reserve account exists on the SNS ledger;
 - the reserve balance is funded by the recorded post-finalization SNS-governance treasury transfer;
 - the standalone ledger fixture can execute a reserve-to-user transfer;
-- the standalone ledger fixture can execute a direct user-to-reserve transfer with the configured fee;
+- the standalone ledger fixture can execute a user-to-staging transfer and the exact staging-to-reserve sweep with the configured fee;
 - fee disposition and total-supply deltas are recorded for each transfer.
 
 ## What Remains Unproven
 
-The schema-v2 `2026-09-03-270dcf3-anchored-dynamic` package closes the current
-local rehearsal item. Layer A proves source-built official SNS launch/wiring;
-Layer B proves the exact proposal-143660 NNS boundary; Layer C proves current IO
-anchored economics, structural/reward scheduling, prepared-push redemption and
-controlled recovery. All earlier packages remain historical and were not
-rebound.
+The schema-v2 `2026-09-03-270dcf3-anchored-dynamic` package is immutable
+evidence for its recorded source revision. It predates semantic-staging
+redemption and therefore does not close the replacement release's local
+rehearsal item. A fresh authorized rehearsal must prove the fixed Account,
+discovery-only scanner, canonical proof, payout and sweep recovery. Earlier
+packages remain historical and were not rebound.
 
 Completed local proof does not prove official SNS reward-share release adoption.
 Source-built revision `4320fdf2e613844eabae1927b1a23b98da3a7bc6`

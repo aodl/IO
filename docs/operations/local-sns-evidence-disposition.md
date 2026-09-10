@@ -1,6 +1,6 @@
 # Local SNS evidence disposition
 
-The sole current local authority is the schema-v2 package
+The last completed local package is the schema-v2 package
 `deploy/local-sns-rehearsal/evidence/2026-09-03-270dcf3-anchored-dynamic`.
 `deploy/local-sns-rehearsal/evidence/current-canonical.toml` is the sole
 selector and binds:
@@ -22,9 +22,10 @@ That package is current evidence for `B=L+P+U+T`, the pre-Ready memo-0 Dynamic
 parent, the exact 10 ICP anchor and excluded-surplus partition, exact fee
 accounting and replenish-first TwoYear maturity, the 12-hour structural
 scheduler, 15-day-plus-one-minute SNS eligibility, natural cohorts with
-ready-child priority, prepared ICRC-1 push redemption, durable owed-payout
-recovery, and same-release upgrade/restart. No earlier package has been
-deleted, rewritten, rebound or reinterpreted as proof of this release.
+ready-child priority, the redemption design recorded by that revision, and
+same-release upgrade/restart. It predates semantic staging and is not authority
+for this checkout's redemption implementation. No package has been deleted,
+rewritten, rebound or reinterpreted as proof of this release.
 
 Its evidence layers are intentionally distinct:
 

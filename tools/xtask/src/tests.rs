@@ -364,6 +364,60 @@ fn create_unreachable_commit(root: &Path) -> String {
     String::from_utf8_lossy(&commit.stdout).trim().to_string()
 }
 
+fn commit_all(root: &Path, message: &str) -> String {
+    assert!(Command::new("git")
+        .current_dir(root)
+        .args(["add", "--all"])
+        .status()
+        .unwrap()
+        .success());
+    assert!(Command::new("git")
+        .current_dir(root)
+        .args([
+            "-c",
+            "user.name=IO xtask test",
+            "-c",
+            "user.email=io-xtask@example.invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            message,
+        ])
+        .status()
+        .unwrap()
+        .success());
+    current_git_commit(root).unwrap()
+}
+
+fn release_lineage_root(name: &str) -> (PathBuf, String, String) {
+    let root = temp_root(name);
+    let source_commit = current_git_commit(&root).unwrap();
+    write_artifact_set(&root);
+    let artifact_commit = commit_all(&root, "record release artifacts");
+    (root, source_commit, artifact_commit)
+}
+
+fn record_completed_release(root: &Path, source_commit: &str, artifact_commit: &str) -> String {
+    write(
+        root,
+        "deploy/local-sns-rehearsal/evidence/fixture/manifest.toml",
+        "[provenance]\ncomplete = true\n",
+    );
+    write(
+        root,
+        CURRENT_CANONICAL_SELECTOR,
+        &selector_text(
+            "fixture",
+            source_commit,
+            artifact_commit,
+            &"3".repeat(64),
+            &"4".repeat(64),
+            &"5".repeat(64),
+        ),
+    );
+    commit_all(root, "record completed release evidence")
+}
+
 fn write_sns_harness_fixture(root: &Path) {
     write(
         root,
@@ -496,7 +550,7 @@ fn write_local_sns_rehearsal_fixture(root: &Path) {
     write(
             root,
             "deploy/local-sns-rehearsal/README.md",
-            "local-only real SNS-created IO ledger/index/governance/root stack not final tokenomics not a mainnet SNS proposal not required CI Do not use `--network ic` protocol reserve reserve-to-user transfer prepared user-to-reserve redemption push validate_local_sns_rehearsal validate_local_sns_ledger validate_local_sns_scripts Human-readable local evidence-derived wiring Not accepted by production wiring validators Do not use as install args\n",
+            "local-only real SNS-created IO ledger/index/governance/root stack not final tokenomics not a mainnet SNS proposal not required CI Do not use `--network ic` protocol reserve reserve-to-user transfer user-to-staging transfer staging-to-reserve sweep validate_local_sns_rehearsal validate_local_sns_ledger validate_local_sns_scripts Human-readable local evidence-derived wiring Not accepted by production wiring validators Do not use as install args\n",
         );
     write(
             root,
@@ -570,7 +624,7 @@ fn write_local_sns_rehearsal_fixture(root: &Path) {
     write(
             root,
             "deploy/local-sns-rehearsal/scripts/15-exercise-ledger.sh",
-            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\nprepare_response=\"$(dfx canister call \"$stream\" prepare_redemption \"$redeem_args\")\"\n# Err = variant { Busy }\ndfx canister call --candid io_stream_manager.did \"$stream\" resume '()'\ndfx canister call --candid io_stream_manager.did \"$stream\" resume_reward_backing '()'\ndfx canister call --candid io_nns_neuron_manager.did \"$nns_manager\" resume '()'\n# prepared redemption remained Busy after bounded production reconciliation recovery\n",
+            "#!/usr/bin/env bash\n# local-only optional\n# Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.\nrequire_local_script_guard \"$@\"\n: \"${IO_LOCAL_SNS_REHEARSAL_ACK:?local-only}\"\nstaging_response=\"$(dfx canister call \"$stream\" get_redemption_staging_account '()')\"\n# memo = null\n# semantic staging transfer did not remain claim-bearing\n# reserve_sweep_block\ndfx canister call --candid io_stream_manager.did \"$stream\" process_redemptions '()'\ndfx canister call --candid io_stream_manager.did \"$stream\" resume_reward_backing '()'\ndfx canister call --candid io_nns_neuron_manager.did \"$nns_manager\" resume '()'\n",
         );
     write(
             root,
@@ -665,7 +719,7 @@ fn write_did_surface_fixture(root: &Path) {
     write(
             root,
             "canisters/io_stream_manager/io_stream_manager.did",
-            "type InitArgs = record {};\nservice : (InitArgs) -> {\n  prepare_redemption : () -> ();\n  settle_redemption : () -> ();\n  resume_redemption : () -> ();\n  prepare_claim_backing_receipt : () -> ();\n  prove_claim_backing_receipt : () -> ();\n  resume : () -> ();\n  prove_active_transfer : () -> ();\n  set_paused : () -> ();\n  validate_set_paused : (bool) -> (variant { Ok : text; Err : text }) query;\n  get_status : () -> () query;\n}\n",
+            "type InitArgs = record {};\nservice : (InitArgs) -> {\n  get_redemption_staging_account : () -> () query;\n  process_redemptions : () -> ();\n  prepare_claim_backing_receipt : () -> ();\n  prove_claim_backing_receipt : () -> ();\n  resume : () -> ();\n  prove_active_transfer : () -> ();\n  set_paused : () -> ();\n  validate_set_paused : (bool) -> (variant { Ok : text; Err : text }) query;\n  get_status : () -> () query;\n}\n",
         );
     write(
             root,
@@ -1145,6 +1199,189 @@ fn artifact_manifest_accepts_artifact_commit_then_evidence_tail() {
         .success());
     verify_artifacts_at(&root).unwrap();
     let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn completed_release_with_permitted_evidence_tail_is_ci_and_release_valid() {
+    let (root, source_commit, artifact_commit) = release_lineage_root("completed-release-valid");
+    record_completed_release(&root, &source_commit, &artifact_commit);
+    write(
+        &root,
+        "docs/release-note.md",
+        "permitted release documentation\n",
+    );
+    commit_all(&root, "record release documentation");
+
+    assert_eq!(
+        verify_completed_release_at(&root).unwrap(),
+        ReleaseLineageState::ReleaseBound
+    );
+    verify_artifacts_at(&root).unwrap();
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn source_development_after_completed_release_is_valid_for_ci() {
+    let (root, source_commit, artifact_commit) = release_lineage_root("post-release-development");
+    record_completed_release(&root, &source_commit, &artifact_commit);
+    write(
+        &root,
+        "Cargo.lock",
+        "legitimate development dependency lock\n",
+    );
+    let development_commit = commit_all(&root, "develop next release");
+
+    assert_eq!(
+        verify_completed_release_at(&root).unwrap(),
+        ReleaseLineageState::DevelopmentAhead {
+            first_development_commit: development_commit,
+        }
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn post_completion_artifact_replacement_cannot_be_classified_as_development() {
+    let (root, source_commit, artifact_commit) =
+        release_lineage_root("post-completion-artifact-replacement");
+    record_completed_release(&root, &source_commit, &artifact_commit);
+
+    let raw = "release-artifacts/io_stream_manager.wasm";
+    write(&root, raw, "superficially valid replacement artifact");
+    let raw_sha = sha256_hex(&root.join(raw)).unwrap();
+    write(
+        &root,
+        "release-artifacts/io_stream_manager.wasm.sha256",
+        &format!("{raw_sha}  {raw}\n"),
+    );
+    let replacement_manifest = build_manifest_for_commit(&root, source_commit).unwrap();
+    write_artifact_manifest(&root, &replacement_manifest);
+    commit_all(&root, "replace completed release artifacts");
+
+    for sidecar in expected_release_artifacts()
+        .iter()
+        .filter(|path| path.ends_with(".sha256"))
+    {
+        verify_artifact_hash(&root, sidecar).unwrap();
+    }
+    assert_eq!(read_manifest(&root).unwrap(), replacement_manifest);
+    verify_no_stale_release_artifacts(&root).unwrap();
+
+    let error = verify_completed_release_at(&root).unwrap_err();
+    assert!(
+        error.contains(&format!(
+            "selected completed release artifacts no longer match artifact-recording commit {artifact_commit}"
+        )),
+        "{error}"
+    );
+    assert!(!error.contains("DevelopmentAhead"), "{error}");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn development_after_completed_release_is_not_strictly_release_ready() {
+    let (root, source_commit, artifact_commit) =
+        release_lineage_root("development-not-release-ready");
+    record_completed_release(&root, &source_commit, &artifact_commit);
+    write(
+        &root,
+        "canisters/example/src/lib.rs",
+        "pub fn next_release_source() {}\n",
+    );
+    commit_all(&root, "develop next release source");
+
+    let error = verify_artifacts_at(&root).unwrap_err();
+    assert!(error.contains("current source is ahead"), "{error}");
+    assert!(
+        error.contains("fresh release artifacts and evidence are required"),
+        "{error}"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn source_mutation_inside_selected_evidence_tail_remains_rejected() {
+    let (root, source_commit, artifact_commit) = release_lineage_root("illegal-evidence-tail");
+    write(&root, "Cargo.lock", "illegal release-tail mutation\n");
+    let bad_commit = commit_all(&root, "mutate source while recording evidence");
+    record_completed_release(&root, &source_commit, &artifact_commit);
+
+    let error = verify_completed_release_at(&root).unwrap_err();
+    assert!(error.contains(&bad_commit), "{error}");
+    assert!(error.contains("evidence/documentation"), "{error}");
+    assert!(error.contains("Cargo.lock"), "{error}");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn selected_evidence_only_completion_remains_accepted() {
+    let (root, source_commit, artifact_commit) = release_lineage_root("evidence-only-completion");
+    record_completed_release(&root, &source_commit, &artifact_commit);
+
+    assert_eq!(
+        verify_completed_release_at(&root).unwrap(),
+        ReleaseLineageState::ReleaseBound
+    );
+    verify_artifacts_at(&root).unwrap();
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn multiple_source_commits_after_completed_release_remain_development() {
+    let (root, source_commit, artifact_commit) =
+        release_lineage_root("multiple-development-commits");
+    record_completed_release(&root, &source_commit, &artifact_commit);
+    write(&root, "Cargo.lock", "development one\n");
+    let first_development_commit = commit_all(&root, "development one");
+    write(
+        &root,
+        "canisters/example/src/lib.rs",
+        "pub fn development_two() {}\n",
+    );
+    commit_all(&root, "development two");
+    write(
+        &root,
+        "tools/xtask/src/development_fixture.rs",
+        "fn development_three() {}\n",
+    );
+    commit_all(&root, "development three");
+
+    assert_eq!(
+        verify_completed_release_at(&root).unwrap(),
+        ReleaseLineageState::DevelopmentAhead {
+            first_development_commit,
+        }
+    );
+    let strict_error = verify_artifacts_at(&root).unwrap_err();
+    assert!(
+        strict_error.contains("current source is ahead"),
+        "{strict_error}"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn release_and_ci_command_composition_keeps_provenance_gates() {
+    let main = include_str!("main.rs");
+    let verify_release = main
+        .split_once("        \"verify_release\" => {")
+        .unwrap()
+        .1
+        .split_once("        \"build_debug_canisters\" => {")
+        .unwrap()
+        .0;
+    assert!(verify_release.contains("\"verify_artifacts\""));
+
+    let test_ci = main
+        .split_once("        \"test_ci\" => {")
+        .unwrap()
+        .1
+        .split_once("        other => {")
+        .unwrap()
+        .0;
+    for required in ["\"verify_recorded_source\"", "\"verify_completed_release\""] {
+        assert!(test_ci.contains(required), "test_ci is missing {required}");
+    }
 }
 
 #[test]

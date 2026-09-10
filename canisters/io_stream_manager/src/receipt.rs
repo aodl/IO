@@ -838,7 +838,6 @@ mod tests {
             },
             10,
             0,
-            0,
         )
         .unwrap();
         assert_eq!(quote.gross_icp, 10, "paired credit must not front-run IO");
