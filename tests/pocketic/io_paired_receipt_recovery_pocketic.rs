@@ -133,6 +133,10 @@ fn malformed_receipt_prepare_replays_and_survives_same_schema_restart() {
         owner: nns,
         subaccount: None,
     };
+    let claim_holder = Account {
+        owner: Principal::from_slice(&[55; 29]),
+        subaccount: None,
+    };
     let governance_hash = pic
         .canister_status(governance, None)
         .unwrap()
@@ -213,6 +217,7 @@ fn malformed_receipt_prepare_replays_and_survives_same_schema_restart() {
     }
     for (ledger, to, amount_e8s) in [
         (io_ledger, reserve.clone(), 60_010_000),
+        (io_ledger, claim_holder, 100_000_000),
         (icp_ledger, liquid.clone(), 100_000_000),
         (icp_ledger, source.clone(), 60_010_000),
     ] {
@@ -256,10 +261,13 @@ fn malformed_receipt_prepare_replays_and_survives_same_schema_restart() {
         "prepare_claim_backing_receipt",
         request.clone(),
     );
-    assert!(matches!(
-        malformed,
-        Err(ApiError::Pending(ref message)) if message.contains("after permit persistence")
-    ));
+    assert!(
+        matches!(
+            malformed,
+            Err(ApiError::Pending(ref message)) if message.contains("after permit persistence")
+        ),
+        "unexpected malformed-prepare result: {malformed:?}"
+    );
     let persisted: StreamStateV1 = query(&pic, stream, "debug_get_state");
     assert!(matches!(
         persisted.active_operation,

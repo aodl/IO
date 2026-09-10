@@ -1937,11 +1937,135 @@ fn git_output(root: &Path, args: &[&str], label: &str) -> Result<String, String>
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-fn validate_release_tail(root: &Path, source_commit: &str) -> Result<(), String> {
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ReleaseLineageState {
+    ReleaseBound,
+    DevelopmentAhead { first_development_commit: String },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CompletedReleaseBoundary {
+    artifact_commit: String,
+    completion_commit: String,
+}
+
+fn selected_completed_release_boundary(
+    root: &Path,
+    source_commit: &str,
+) -> Result<Option<CompletedReleaseBoundary>, String> {
+    if !root.join(CURRENT_CANONICAL_SELECTOR).is_file() {
+        return Ok(None);
+    }
+    let selector_status = git_output(
+        root,
+        &["status", "--porcelain=v1", "--", CURRENT_CANONICAL_SELECTOR],
+        "git status current completed-release selector",
+    )?;
+    if !selector_status.is_empty() {
+        return Err(format!(
+            "{CURRENT_CANONICAL_SELECTOR}: completed-release selector must be committed"
+        ));
+    }
+    let selector = read_current_canonical_selector(root)?;
+    if selector.io_release_source_commit != source_commit {
+        return Err(format!(
+            "{CURRENT_CANONICAL_SELECTOR}: selected completed release source {} does not match artifact manifest source {source_commit}",
+            selector.io_release_source_commit
+        ));
+    }
+    let completion_commit = git_output(
+        root,
+        &["log", "-1", "--format=%H", "--", CURRENT_CANONICAL_SELECTOR],
+        "git log completed-release selector",
+    )?;
+    if completion_commit.is_empty() {
+        return Err(format!(
+            "{CURRENT_CANONICAL_SELECTOR}: completed-release selector has no committed history"
+        ));
+    }
+    Ok(Some(CompletedReleaseBoundary {
+        artifact_commit: selector.io_artifact_recording_commit,
+        completion_commit,
+    }))
+}
+
+fn release_commit_paths(root: &Path, commit: &str) -> Result<Vec<String>, String> {
+    Ok(git_output(
+        root,
+        &[
+            "diff-tree",
+            "--no-commit-id",
+            "--name-only",
+            "--no-renames",
+            "-r",
+            commit,
+        ],
+        "git diff-tree release-tail commit",
+    )?
+    .lines()
+    .map(str::to_string)
+    .collect())
+}
+
+fn git_diff_is_quiet(root: &Path, args: &[&str], label: &str) -> Result<bool, String> {
+    let output = Command::new("git")
+        .current_dir(root)
+        .args(args)
+        .output()
+        .map_err(|error| format!("{label}: {error}"))?;
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(format!(
+            "{label} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )),
+    }
+}
+
+fn verify_selected_completed_release_artifacts(
+    root: &Path,
+    artifact_commit: &str,
+) -> Result<(), String> {
+    let recorded_tree_matches = git_diff_is_quiet(
+        root,
+        &[
+            "diff",
+            "--quiet",
+            artifact_commit,
+            "HEAD",
+            "--",
+            "release-artifacts",
+        ],
+        "git diff selected artifact-recording commit",
+    )?;
+    let worktree_matches = git_diff_is_quiet(
+        root,
+        &["diff", "--quiet", "HEAD", "--", "release-artifacts"],
+        "git diff checked-in release artifacts",
+    )?;
+    if !recorded_tree_matches || !worktree_matches {
+        return Err(format!(
+            "selected completed release artifacts no longer match artifact-recording commit {artifact_commit}"
+        ));
+    }
+    Ok(())
+}
+
+fn classify_release_lineage(
+    root: &Path,
+    source_commit: &str,
+    completed: Option<&CompletedReleaseBoundary>,
+) -> Result<ReleaseLineageState, String> {
     validate_release_source_ancestor(root, source_commit)?;
     let head = current_git_commit(root)?;
     if head == source_commit {
-        return Ok(());
+        if completed.is_some() {
+            return Err(
+                "completed release selector cannot be recorded at its source commit".into(),
+            );
+        }
+        return Ok(ReleaseLineageState::ReleaseBound);
     }
     let commits = git_output(
         root,
@@ -1967,25 +2091,63 @@ fn validate_release_tail(root: &Path, source_commit: &str) -> Result<(), String>
             "artifact-recording commit {artifact_commit} must directly follow source-finalization commit {source_commit}"
         ));
     }
-    for (index, commit) in commits.iter().enumerate() {
-        let paths = git_output(
-            root,
-            &[
-                "diff-tree",
-                "--no-commit-id",
-                "--name-only",
-                "--no-renames",
-                "-r",
-                commit,
-            ],
-            "git diff-tree release-tail commit",
-        )?
-        .lines()
-        .map(str::to_string)
-        .collect::<Vec<_>>();
+    let completion_index = match completed {
+        Some(boundary) => {
+            if *artifact_commit != boundary.artifact_commit {
+                return Err(format!(
+                    "selected artifact-recording commit {} does not match immediate artifact commit {artifact_commit}",
+                    boundary.artifact_commit
+                ));
+            }
+            commits
+                .iter()
+                .position(|commit| *commit == boundary.completion_commit)
+                .ok_or_else(|| {
+                    format!(
+                        "completed release selector commit {} is not on the release lineage",
+                        boundary.completion_commit
+                    )
+                })?
+        }
+        None => commits.len() - 1,
+    };
+    for (index, commit) in commits.iter().take(completion_index + 1).enumerate() {
+        let paths = release_commit_paths(root, commit)?;
         validate_release_commit_paths(commit, &paths, index == 0)?;
     }
-    Ok(())
+    for commit in commits.iter().skip(completion_index + 1) {
+        let paths = release_commit_paths(root, commit)?;
+        if validate_release_commit_paths(commit, &paths, false).is_err() {
+            return Ok(ReleaseLineageState::DevelopmentAhead {
+                first_development_commit: (*commit).to_string(),
+            });
+        }
+    }
+    Ok(ReleaseLineageState::ReleaseBound)
+}
+
+fn validate_release_tail(root: &Path, source_commit: &str) -> Result<(), String> {
+    let completed = selected_completed_release_boundary(root, source_commit)?;
+    match classify_release_lineage(root, source_commit, completed.as_ref())? {
+        ReleaseLineageState::ReleaseBound => Ok(()),
+        ReleaseLineageState::DevelopmentAhead {
+            first_development_commit,
+        } => Err(format!(
+            "current source is ahead of recorded completed release source {source_commit} starting at {first_development_commit}; fresh release artifacts and evidence are required before release"
+        )),
+    }
+}
+
+fn validate_completed_release_tail(
+    root: &Path,
+    source_commit: &str,
+) -> Result<ReleaseLineageState, String> {
+    let completed = selected_completed_release_boundary(root, source_commit)?;
+    let lineage = classify_release_lineage(root, source_commit, completed.as_ref())?;
+    if let Some(boundary) = completed {
+        verify_selected_completed_release_artifacts(root, &boundary.artifact_commit)?;
+    }
+    Ok(lineage)
 }
 
 fn validate_release_source_tree(root: &Path, git_commit: &str) -> Result<(), String> {
@@ -2117,7 +2279,10 @@ fn read_manifest(root: &Path) -> Result<ArtifactManifest, String> {
     serde_json::from_str(&text).map_err(|err| format!("{MANIFEST_PATH}: {err}"))
 }
 
-fn verify_manifest(root: &Path) -> Result<(), String> {
+fn verify_manifest_with_lineage(
+    root: &Path,
+    development_ci: bool,
+) -> Result<ReleaseLineageState, String> {
     let actual = read_manifest(root)?;
     if actual.schema_version != 1 {
         return Err(format!(
@@ -2129,7 +2294,12 @@ fn verify_manifest(root: &Path) -> Result<(), String> {
         .git_commit
         .clone()
         .ok_or_else(|| format!("{MANIFEST_PATH}: git_commit is required"))?;
-    validate_release_tail(root, &source_commit).map_err(|err| format!("{MANIFEST_PATH}: {err}"))?;
+    let lineage = if development_ci {
+        validate_completed_release_tail(root, &source_commit)
+    } else {
+        validate_release_tail(root, &source_commit).map(|()| ReleaseLineageState::ReleaseBound)
+    }
+    .map_err(|err| format!("{MANIFEST_PATH}: {err}"))?;
     for entry in &actual.artifacts {
         if entry.git_commit.as_deref() != Some(source_commit.as_str()) {
             return Err(format!(
@@ -2145,7 +2315,11 @@ fn verify_manifest(root: &Path) -> Result<(), String> {
             "{MANIFEST_PATH}: manifest does not match current artifacts"
         ));
     }
-    Ok(())
+    Ok(lineage)
+}
+
+fn verify_manifest(root: &Path) -> Result<(), String> {
+    verify_manifest_with_lineage(root, false).map(|_| ())
 }
 
 fn verify_no_stale_release_artifacts(root: &Path) -> Result<(), String> {
@@ -2156,7 +2330,10 @@ fn verify_no_stale_release_artifacts(root: &Path) -> Result<(), String> {
     for entry in fs::read_dir(&release_dir).map_err(|err| format!("release-artifacts: {err}"))? {
         let entry = entry.map_err(|err| format!("release-artifacts: {err}"))?;
         if !entry.file_type().map_err(|err| err.to_string())?.is_file() {
-            continue;
+            return Err(format!(
+                "stale or unexpected release artifact {}",
+                entry.path().display()
+            ));
         }
         let path = format!("release-artifacts/{}", entry.file_name().to_string_lossy());
         if !expected.contains(&path) {
@@ -2175,6 +2352,17 @@ fn verify_artifacts_at(root: &Path) -> Result<(), String> {
     verify_manifest(root)?;
     verify_no_stale_release_artifacts(root)?;
     Ok(())
+}
+
+fn verify_completed_release_at(root: &Path) -> Result<ReleaseLineageState, String> {
+    let artifacts = expected_release_artifacts();
+    check_artifacts(root, &artifacts)?;
+    for sha in artifacts.iter().filter(|path| path.ends_with(".sha256")) {
+        verify_artifact_hash(root, sha)?;
+    }
+    let lineage = verify_manifest_with_lineage(root, true)?;
+    verify_no_stale_release_artifacts(root)?;
+    Ok(lineage)
 }
 
 fn validate_principal(field: &str, value: &str, mode: InstallArgsMode) -> Result<(), String> {
@@ -7727,7 +7915,7 @@ fn check_e2e_coverage_matrix_at(root: &Path) -> Result<(), String> {
         &matrix,
         &[
             "real SNS ledger",
-            "Installed direct-reserve redemption",
+            "Installed semantic-staging redemption",
             "Exact reward allocation",
             "Historian separation",
             "Scanner-era tests are historical",
@@ -8577,7 +8765,7 @@ fn run_security_scan(required: bool) -> bool {
 }
 
 fn print_known_commands() {
-    eprintln!("known: test_all, test_ci, verify_release, simplicity_check, validate_workflows, validate_obsolete_economics_guard, validate_nns_boundary_pin, security_scan, security_scan_required, validate_install_args, validate_production_wiring, validate_historian_freshness, validate_stable_storage, validate_local_sns_rehearsal, validate_local_sns_ledger, validate_local_sns_evidence_package, validate_local_sns_committed_evidence, validate_local_sns_scripts, e2e_coverage_matrix_check, live_stream_manager_pocketic_gate_check, real_canister_harness_check, real_canister_artifact_manifest_check, verify_real_canister_artifacts, fetch_real_canister_artifacts, real_sns_ledger_index_tests, real_sns_ledger_index_required, real_sns_governance_tests, real_sns_governance_required, real_io_e2e_tests, real_io_e2e_required, e2e_real_coverage_check, local_sns_evidence_tests, sns_apy_policy_tests, frontend_setup, frontend_build, frontend_unit, frontend_certified_asset_tests, frontend_required, frontend_all, historian_tests, historian_required, sns_harness_check, sns_config_validate, sns_config_validate_official, sns_launch_readiness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_root_lifecycle_tests, sns_root_lifecycle_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, build_recorded_source, verify_recorded_source, compare_release_artifact_dirs, nns_neuron_staking_subaccount, sns_distribution_subaccount, calculate_redemption_economics, index_transfer_block, verify_artifacts, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, historian_pocketic_integration, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
+    eprintln!("known: test_all, test_ci, verify_release, simplicity_check, validate_workflows, validate_obsolete_economics_guard, validate_nns_boundary_pin, security_scan, security_scan_required, validate_install_args, validate_production_wiring, validate_historian_freshness, validate_stable_storage, validate_local_sns_rehearsal, validate_local_sns_ledger, validate_local_sns_evidence_package, validate_local_sns_committed_evidence, validate_local_sns_scripts, e2e_coverage_matrix_check, live_stream_manager_pocketic_gate_check, real_canister_harness_check, real_canister_artifact_manifest_check, verify_real_canister_artifacts, fetch_real_canister_artifacts, real_sns_ledger_index_tests, real_sns_ledger_index_required, real_sns_governance_tests, real_sns_governance_required, real_io_e2e_tests, real_io_e2e_required, e2e_real_coverage_check, local_sns_evidence_tests, sns_apy_policy_tests, frontend_setup, frontend_build, frontend_unit, frontend_certified_asset_tests, frontend_required, frontend_all, historian_tests, historian_required, sns_harness_check, sns_config_validate, sns_config_validate_official, sns_launch_readiness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_root_lifecycle_tests, sns_root_lifecycle_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, build_recorded_source, verify_recorded_source, compare_release_artifact_dirs, nns_neuron_staking_subaccount, sns_distribution_subaccount, calculate_redemption_economics, index_transfer_block, verify_artifacts, verify_completed_release, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, historian_pocketic_integration, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
 }
 
 fn main() -> ExitCode {
@@ -8841,6 +9029,20 @@ fn main() -> ExitCode {
             Ok(()) => eprintln!("✓ verify_artifacts"),
             Err(err) => {
                 eprintln!("✗ verify_artifacts: {err}");
+                ok = false;
+            }
+        },
+        "verify_completed_release" => match verify_completed_release_at(&root) {
+            Ok(ReleaseLineageState::ReleaseBound) => {
+                eprintln!("✓ verify_completed_release: current source remains release-bound")
+            }
+            Ok(ReleaseLineageState::DevelopmentAhead {
+                first_development_commit,
+            }) => eprintln!(
+                "✓ verify_completed_release: current source is ahead of the recorded completed release starting at {first_development_commit}; fresh release artifacts and evidence will be required before release"
+            ),
+            Err(err) => {
+                eprintln!("✗ verify_completed_release: {err}");
                 ok = false;
             }
         },
@@ -9618,7 +9820,7 @@ fn main() -> ExitCode {
             }
         }
         "test_local_integration" => {
-            ok &= run_subcommand("verify_artifacts");
+            ok &= run_subcommand("verify_completed_release");
             ok &= run_subcommand("did_surface");
             ok &= run_subcommand("validate_install_args");
             ok &= run("local-cli: icp project show", icp(&["project", "show"]));
@@ -9705,7 +9907,7 @@ fn main() -> ExitCode {
                 "did_surface",
                 "validate_nns_boundary_pin",
                 "verify_recorded_source",
-                "verify_artifacts",
+                "verify_completed_release",
                 "validate_install_args",
                 "validate_production_wiring",
                 "validate_historian_freshness",

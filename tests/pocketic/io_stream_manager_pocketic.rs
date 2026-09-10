@@ -1543,9 +1543,7 @@ fn staged_redemption_wake_is_local_coalesced_and_economically_exact_once() {
         unblocked,
     )
     .unwrap();
-    let wake: Result<(), ApiError> = update(&pic, stream, user, "process_redemptions", ());
-    wake.unwrap();
-    pic.advance_time(Duration::from_secs(1));
+    pic.advance_time(Duration::from_secs(60));
     for _ in 0..30 {
         pic.tick();
         if query::<Status>(&pic, stream, "get_status").pending_redemption_candidates == 0
@@ -1806,7 +1804,7 @@ fn first_definitive_no_effect_requeues_for_a_fresh_safe_attempt() {
     .into_iter()
     .all(|tx| tx.to_account.as_ref() != Some(&fixture.user_account)));
 
-    wake_and_tick(&fixture);
+    advance_and_tick(&fixture, 60);
     let complete: Status = query(&fixture.pic, fixture.stream, "get_status");
     assert!(complete.operation_kind.is_none());
     assert_eq!(complete.pending_redemption_candidates, 0);

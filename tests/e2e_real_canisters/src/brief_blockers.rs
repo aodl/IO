@@ -494,7 +494,7 @@ mod frontend_honesty {
         assert!(combined.contains("<form"));
         assert!(combined.contains("type=\"submit\""));
         assert!(combined.contains("fixed redemption staging Account"));
-        assert!(combined.contains("approximately once per minute"));
+        assert!(combined.contains("normally begins within about a minute"));
         assert!(combined.contains("canonicalSubaccount"));
         assert!(combined.contains("icrc1_transfer"));
         assert!(combined.contains("get_redemption_staging_account"));
