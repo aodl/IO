@@ -1,13 +1,84 @@
-use candid::{decode_one, encode_one, CandidType, Principal};
+use candid::{decode_one, encode_one, CandidType, Nat, Principal};
 use io_stream_manager::{
     Account, ApiError, InitArgs, Lifecycle, RewardEventClassification, RewardEventObservation,
     Status, StreamConfig, StreamStateV1,
 };
-use pocket_ic::PocketIc;
+use pocket_ic::{PocketIc, PocketIcBuilder};
 use serde::Deserialize;
-use std::time::Duration;
+use std::{
+    process::{Child, Command, Stdio},
+    sync::{Mutex, MutexGuard, OnceLock},
+    thread,
+    time::{Duration, Instant},
+};
 
 const CYCLES: u128 = 2_000_000_000_000;
+
+struct StreamServer {
+    url: String,
+    _child: Mutex<Child>,
+}
+
+fn stream_server() -> &'static StreamServer {
+    static SERVER: OnceLock<StreamServer> = OnceLock::new();
+    SERVER.get_or_init(|| {
+        let binary = std::env::var_os("POCKET_IC_BIN")
+            .expect("POCKET_IC_BIN must be set for live Stream Manager tests");
+        let port_file = std::env::temp_dir().join(format!(
+            "io_stream_manager_pocketic_{}.port",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&port_file);
+        let mut command = Command::new(binary);
+        command
+            .args(["--ttl", "300", "--hard-ttl", "3600", "--port-file"])
+            .arg(&port_file);
+        if std::env::var_os("POCKET_IC_MUTE_SERVER").is_some() {
+            command.stdout(Stdio::null()).stderr(Stdio::null());
+        }
+        let mut child = command
+            .spawn()
+            .expect("failed to start the dedicated Stream Manager PocketIC server");
+        let started = Instant::now();
+        let port = loop {
+            if let Ok(value) = std::fs::read_to_string(&port_file) {
+                if let Ok(port) = value.trim().parse::<u16>() {
+                    break port;
+                }
+            }
+            if let Some(status) = child.try_wait().expect("failed to inspect PocketIC server") {
+                panic!("Stream Manager PocketIC server exited early: {status}");
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(30),
+                "Stream Manager PocketIC server did not publish its port"
+            );
+            thread::sleep(Duration::from_millis(20));
+        };
+        let _ = std::fs::remove_file(port_file);
+        StreamServer {
+            url: format!("http://127.0.0.1:{port}/"),
+            _child: Mutex::new(child),
+        }
+    })
+}
+
+fn stream_pocket_ic() -> PocketIc {
+    PocketIcBuilder::new()
+        .with_application_subnet()
+        .with_server_url(
+            stream_server()
+                .url
+                .parse()
+                .expect("dedicated PocketIC URL must parse"),
+        )
+        .build()
+}
+
+fn lock_stream_test() -> MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 #[derive(Clone, Debug, CandidType, Deserialize)]
 struct DebugMintAccountArgs {
@@ -50,19 +121,13 @@ struct MockSnsNeuron {
     is_dissolving: bool,
 }
 
-#[derive(Clone, Copy, Debug, CandidType, Deserialize)]
-struct SnsUint128 {
-    high: u64,
-    low: u64,
-}
-
 #[derive(Clone, Debug, CandidType, Deserialize)]
 struct LatestRewardEventFixture {
     round: u64,
     rounds_since_last_distribution: u64,
     end_timestamp_seconds: u64,
     settled_proposal_ids: Vec<u64>,
-    neuron_reward_shares: Vec<(u64, SnsUint128)>,
+    neuron_reward_shares: Vec<(u64, Nat)>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
@@ -154,15 +219,16 @@ struct RedemptionFixture {
     icp_ledger: Principal,
     nns: Principal,
     stream: Principal,
-    governance: Principal,
     user: Principal,
     user_account: Account,
     reserve: Account,
     staging: Account,
+    _server_guard: MutexGuard<'static, ()>,
 }
 
 fn redemption_fixture() -> RedemptionFixture {
-    let pic = PocketIc::new();
+    let server_guard = lock_stream_test();
+    let pic = stream_pocket_ic();
     let io_ledger = install(&pic, "mock_io_ledger");
     let io_index = pic.create_canister();
     pic.add_cycles(io_index, CYCLES);
@@ -303,11 +369,11 @@ fn redemption_fixture() -> RedemptionFixture {
         icp_ledger,
         nns,
         stream,
-        governance,
         user,
         user_account,
         reserve,
         staging,
+        _server_guard: server_guard,
     }
 }
 
@@ -926,15 +992,10 @@ fn rotated_service_queue_survives_upgrade_and_keeps_payable_candidate_reachable(
     assert_eq!(restored.pending_redemption_blocks, vec![payable, oversized]);
     assert!(restored.active_operation.is_none());
 
+    advance_and_tick(&fixture, 1);
     assert_eq!(
-        update::<_, Result<(), ApiError>>(
-            &fixture.pic,
-            fixture.stream,
-            fixture.governance,
-            "set_paused",
-            false,
-        ),
-        Ok(())
+        query::<Status>(&fixture.pic, fixture.stream, "get_status").lifecycle,
+        Lifecycle::Ready
     );
     let mut ready: StreamStateV1 = query(&fixture.pic, fixture.stream, "debug_get_state");
     ready.reward_checkpoint.reward_work_due = false;
@@ -1229,7 +1290,7 @@ fn full_service_queue_backpressures_discovery_but_still_services_one_head() {
 }
 
 #[test]
-fn simplified_stream_installs_paused_and_rejects_anonymous_before_funds_move() {
+fn simplified_stream_installs_paused_retries_and_has_no_proposal_controls() {
     if std::env::var_os("POCKET_IC_BIN").is_none() {
         eprintln!("skipping stream-manager PocketIC test because POCKET_IC_BIN is not set");
         return;
@@ -1243,7 +1304,8 @@ fn simplified_stream_installs_paused_and_rejects_anonymous_before_funds_move() {
             return;
         }
     };
-    let pic = PocketIc::new();
+    let _server_guard = lock_stream_test();
+    let pic = stream_pocket_ic();
     let canister = pic.create_canister();
     pic.add_cycles(canister, CYCLES);
     let io_ledger = Principal::from_slice(&[1; 29]);
@@ -1300,27 +1362,30 @@ fn simplified_stream_installs_paused_and_rejects_anonymous_before_funds_move() {
     .unwrap();
     assert_eq!(status.lifecycle, Lifecycle::Paused);
     assert!(status.operation_kind.is_none());
-    let rendered: Result<String, String> = decode_one(
-        &pic.query_call(
-            canister,
-            Principal::anonymous(),
-            "validate_set_paused",
-            encode_one(false).unwrap(),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    let rendered = rendered.unwrap();
-    assert!(rendered.contains("Set IO stream paused: false"));
-    assert!(rendered.contains("Current lifecycle: Paused"));
     assert!(pic
         .query_call(
             canister,
             Principal::anonymous(),
             "validate_set_paused",
-            encode_one(()).unwrap(),
+            encode_one(false).unwrap(),
         )
         .is_err());
+    assert!(pic
+        .update_call(
+            canister,
+            governance,
+            "set_paused",
+            encode_one(false).unwrap(),
+        )
+        .is_err());
+    pic.advance_time(Duration::from_secs(1));
+    for _ in 0..20 {
+        pic.tick();
+    }
+    assert_eq!(
+        query::<Status>(&pic, canister, "get_status").lifecycle,
+        Lifecycle::Paused
+    );
     pic.upgrade_canister(canister, wasm, encode_one(()).unwrap(), None)
         .unwrap();
     let upgraded: Status = decode_one(
@@ -1334,39 +1399,10 @@ fn simplified_stream_installs_paused_and_rejects_anonymous_before_funds_move() {
     )
     .unwrap();
     assert_eq!(upgraded.lifecycle, Lifecycle::Paused);
-    let rendered_after_upgrade: Result<String, String> = decode_one(
-        &pic.query_call(
-            canister,
-            Principal::anonymous(),
-            "validate_set_paused",
-            encode_one(true).unwrap(),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    let rendered_after_upgrade = rendered_after_upgrade.unwrap();
-    assert!(rendered_after_upgrade.contains("Set IO stream paused: true"));
-    assert!(rendered_after_upgrade.contains("Current lifecycle: Paused"));
-    let unauthorized: Result<(), ApiError> = decode_one(
-        &pic.update_call(
-            canister,
-            Principal::anonymous(),
-            "set_paused",
-            encode_one(false).unwrap(),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(unauthorized, Err(ApiError::Unauthorized));
-    let rejected = pic
-        .update_call(
-            canister,
-            governance,
-            "set_paused",
-            encode_one(false).unwrap(),
-        )
-        .expect_err("SNS readiness with unavailable dependencies must reject");
-    assert!(format!("{rejected:?}").contains("stream lifecycle action not accepted"));
+    pic.advance_time(Duration::from_secs(1));
+    for _ in 0..20 {
+        pic.tick();
+    }
     let still_paused: Status = decode_one(
         &pic.query_call(
             canister,
@@ -1397,7 +1433,8 @@ fn staged_redemption_wake_is_local_coalesced_and_economically_exact_once() {
         eprintln!("skipping staged-redemption PocketIC test because POCKET_IC_BIN is not set");
         return;
     }
-    let pic = PocketIc::new();
+    let _server_guard = lock_stream_test();
+    let pic = stream_pocket_ic();
     let io_ledger = install(&pic, "mock_io_ledger");
     let io_index = pic.create_canister();
     pic.add_cycles(io_index, CYCLES);
@@ -1622,16 +1659,6 @@ fn ambiguous_payout_survives_upgrade_and_exact_retry_pays_once() {
             None,
         )
         .unwrap();
-    let unpause_rejected = fixture
-        .pic
-        .update_call(
-            fixture.stream,
-            fixture.governance,
-            "set_paused",
-            encode_one(false).unwrap(),
-        )
-        .expect_err("active redemption must block ordinary readiness");
-    assert!(format!("{unpause_rejected:?}").contains("Busy"));
     assert_eq!(
         query::<LedgerCallCounters>(&fixture.pic, fixture.io_ledger, "debug_get_call_counters"),
         io_before_upgrade,
@@ -1642,39 +1669,11 @@ fn ambiguous_payout_survives_upgrade_and_exact_retry_pays_once() {
         icp_before_upgrade,
         "readiness rejects before ICP monetary reads"
     );
-    let immutable_before: StreamStateV1 = query(&fixture.pic, fixture.stream, "debug_get_state");
-    for caller in 1..=100_u8 {
-        assert_eq!(
-            update::<_, Result<io_stream_manager::StreamProgress, ApiError>>(
-                &fixture.pic,
-                fixture.stream,
-                Principal::from_slice(&[caller; 29]),
-                "resume",
-                (),
-            ),
-            Err(ApiError::Unauthorized)
-        );
-    }
-    assert_eq!(
-        query::<StreamStateV1>(&fixture.pic, fixture.stream, "debug_get_state"),
-        immutable_before,
-        "unauthorized resume calls cannot change the submitted operation"
-    );
-    assert_eq!(
-        query::<LedgerCallCounters>(&fixture.pic, fixture.io_ledger, "debug_get_call_counters"),
-        io_before_upgrade,
-        "unauthorized resume calls make no IO-ledger calls"
-    );
-    assert_eq!(
-        query::<LedgerCallCounters>(&fixture.pic, fixture.icp_ledger, "debug_get_call_counters"),
-        icp_before_upgrade,
-        "unauthorized resume calls make no ICP-ledger calls"
-    );
     fixture.pic.advance_time(Duration::from_secs(1));
     let resumed: Result<io_stream_manager::StreamProgress, ApiError> = update(
         &fixture.pic,
         fixture.stream,
-        fixture.governance,
+        Principal::from_slice(&[99; 29]),
         "resume",
         (),
     );
@@ -1691,7 +1690,7 @@ fn ambiguous_payout_survives_upgrade_and_exact_retry_pays_once() {
     assert_eq!(io_after_resume.transfer, io_before_upgrade.transfer + 1);
     assert_eq!(icp_after_resume.transfer, icp_before_upgrade.transfer + 1);
     eprintln!(
-        "redemption_resume_auth_evidence unauthorized_callers=100 unauthorized_io_calls=0 unauthorized_icp_calls=0 governance_icp_retry_calls=1 governance_io_sweep_calls=1"
+        "redemption_resume_evidence arbitrary_caller=true icp_retry_calls=1 io_sweep_calls=1"
     );
     let payouts = update::<_, Vec<DebugLedgerTransaction>>(
         &fixture.pic,
@@ -1708,14 +1707,7 @@ fn ambiguous_payout_survives_upgrade_and_exact_retry_pays_once() {
     assert!(complete.operation_kind.is_none());
     assert_eq!(complete.pending_redemption_candidates, 0);
 
-    let unpaused: Result<(), ApiError> = update(
-        &fixture.pic,
-        fixture.stream,
-        fixture.governance,
-        "set_paused",
-        false,
-    );
-    assert_eq!(unpaused, Ok(()));
+    advance_and_tick(&fixture, 60);
     assert_eq!(
         query::<Status>(&fixture.pic, fixture.stream, "get_status").lifecycle,
         Lifecycle::Ready
@@ -2161,7 +2153,7 @@ fn committed_ambiguous_sweep_is_completed_by_exact_proof_without_retransfer() {
     let stuck: Result<io_stream_manager::StreamProgress, ApiError> = update(
         &fixture.pic,
         fixture.stream,
-        fixture.governance,
+        Principal::from_slice(&[81; 29]),
         "resume",
         (),
     );
@@ -2169,10 +2161,30 @@ fn committed_ambiguous_sweep_is_completed_by_exact_proof_without_retransfer() {
     let transfer_calls =
         query::<LedgerCallCounters>(&fixture.pic, fixture.io_ledger, "debug_get_call_counters")
             .transfer;
+    let state_before_wrong: StreamStateV1 = query(&fixture.pic, fixture.stream, "debug_get_state");
+    let wrong: Result<(), ApiError> = update(
+        &fixture.pic,
+        fixture.stream,
+        Principal::from_slice(&[82; 29]),
+        "prove_active_transfer",
+        u128::from(sweep_block + 1),
+    );
+    assert!(wrong.is_err());
+    assert_eq!(
+        query::<StreamStateV1>(&fixture.pic, fixture.stream, "debug_get_state"),
+        state_before_wrong,
+        "a wrong proof cannot alter the persisted transfer intent"
+    );
+    assert_eq!(
+        query::<LedgerCallCounters>(&fixture.pic, fixture.io_ledger, "debug_get_call_counters")
+            .transfer,
+        transfer_calls,
+        "a wrong proof cannot submit another transfer"
+    );
     let proof: Result<(), ApiError> = update(
         &fixture.pic,
         fixture.stream,
-        fixture.governance,
+        Principal::from_slice(&[83; 29]),
         "prove_active_transfer",
         u128::from(sweep_block),
     );
@@ -2186,7 +2198,7 @@ fn committed_ambiguous_sweep_is_completed_by_exact_proof_without_retransfer() {
     let repeated: Result<(), ApiError> = update(
         &fixture.pic,
         fixture.stream,
-        fixture.governance,
+        Principal::from_slice(&[84; 29]),
         "prove_active_transfer",
         u128::from(sweep_block),
     );
@@ -2202,7 +2214,8 @@ fn reward_observation_and_best_effort_refresh_are_bounded_and_monetary_once() {
         eprintln!("skipping Stream liveness PocketIC test because POCKET_IC_BIN is not set");
         return;
     }
-    let pic = PocketIc::new();
+    let _server_guard = lock_stream_test();
+    let pic = stream_pocket_ic();
     let io_ledger = install(&pic, "mock_io_ledger");
     let icp_ledger = install(&pic, "mock_icp_ledger");
     let root = install(&pic, "mock_sns_root");
@@ -2355,8 +2368,10 @@ fn reward_observation_and_best_effort_refresh_are_bounded_and_monetary_once() {
         .unwrap(),
         None,
     );
-    let unpaused: Result<(), ApiError> = update(&pic, stream, governance, "set_paused", false);
-    unpaused.unwrap();
+    pic.advance_time(Duration::from_secs(1));
+    for _ in 0..40 {
+        pic.tick();
+    }
     let initial: Status = query(&pic, stream, "get_status");
     assert!(initial.reward_work_due);
     assert_eq!(
@@ -2532,9 +2547,7 @@ fn reward_observation_and_best_effort_refresh_are_bounded_and_monetary_once() {
             rounds_since_last_distribution: 1,
             end_timestamp_seconds: baseline_end + 86_400,
             settled_proposal_ids: vec![1],
-            neuron_reward_shares: (1_u64..=6)
-                .map(|id| (id, SnsUint128 { high: 0, low: 1 }))
-                .collect(),
+            neuron_reward_shares: (1_u64..=6).map(|id| (id, Nat::from(1_u8))).collect(),
         },
     );
     advanced.unwrap();
@@ -2577,9 +2590,7 @@ fn reward_observation_and_best_effort_refresh_are_bounded_and_monetary_once() {
             rounds_since_last_distribution: 1,
             end_timestamp_seconds: baseline_end + 172_800,
             settled_proposal_ids: vec![2],
-            neuron_reward_shares: (1_u64..=6)
-                .map(|id| (id, SnsUint128 { high: 0, low: 1 }))
-                .collect(),
+            neuron_reward_shares: (1_u64..=6).map(|id| (id, Nat::from(1_u8))).collect(),
         },
     );
     transport_event.unwrap();

@@ -2009,12 +2009,9 @@ fn validate_bundle(root: &Path) -> Result<(), String> {
 
 fn verify_candidate_did(text: &str) -> Result<(), String> {
     for required in [
-        "type Uint128 = record",
-        "high : nat64",
-        "low : nat64",
         "type RewardEventParticipation = record",
-        "reward_event_end_timestamp_seconds : nat64",
-        "reward_shares : opt Uint128",
+        "reward_event_end_timestamp_seconds : opt nat64",
+        "reward_shares : opt nat",
         "latest_reward_event_participation : opt RewardEventParticipation",
         "get_latest_reward_event : () -> (RewardEvent) query",
         "list_neurons : (ListNeurons) -> (ListNeuronsResponse) query",
@@ -2024,6 +2021,11 @@ fn verify_candidate_did(text: &str) -> Result<(), String> {
                 "candidate Governance DID does not prove required additive contract: missing {required:?}"
             ));
         }
+    }
+    if text.contains("type Uint128 = record") || text.contains("reward_shares : opt Uint128") {
+        return Err(
+            "candidate Governance DID still uses the obsolete Uint128 reward-share ABI".into(),
+        );
     }
     Ok(())
 }
@@ -2495,8 +2497,7 @@ mod tests {
 
     #[test]
     fn candidate_did_requires_the_additive_field_and_queries() {
-        let did = "type Uint128 = record { high : nat64; low : nat64 };\n\
-            type RewardEventParticipation = record { reward_event_end_timestamp_seconds : nat64; reward_shares : opt Uint128 };\n\
+        let did = "type RewardEventParticipation = record { reward_event_end_timestamp_seconds : opt nat64; reward_shares : opt nat };\n\
             type RewardEvent = record {}; type ListNeurons = record {}; type ListNeuronsResponse = record {};\n\
             type Neuron = record { latest_reward_event_participation : opt RewardEventParticipation };\n\
             service : { get_latest_reward_event : () -> (RewardEvent) query; list_neurons : (ListNeurons) -> (ListNeuronsResponse) query }";

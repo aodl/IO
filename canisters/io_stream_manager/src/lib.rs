@@ -30,32 +30,6 @@ pub use state::{
     StreamStateV1,
 };
 
-fn validate_set_paused_state(snapshot: &StreamStateV1, paused: bool) -> Result<String, String> {
-    let changes_lifecycle = paused != (snapshot.lifecycle == Lifecycle::Paused);
-    if changes_lifecycle && snapshot.control_epoch == u64::MAX {
-        return Err("stream control epoch is exhausted".into());
-    }
-    if !paused && snapshot.lifecycle == Lifecycle::Paused {
-        if !lifecycle::is_readiness_resumable_operation(&snapshot.active_operation) {
-            return Err(
-                "Busy: IO stream must recover its active operation while Paused before readiness"
-                    .into(),
-            );
-        }
-        if snapshot.prepared_exit_reconciliation.is_some() {
-            return Err("IO stream has a prepared exit reconciliation".into());
-        }
-    }
-    Ok(format!(
-        "Set IO stream paused: {paused}. Current lifecycle: {:?}",
-        snapshot.lifecycle
-    ))
-}
-
-fn sns_reject(action: &str, reason: impl std::fmt::Display) -> ! {
-    ic_cdk::trap(format!("SNS {action} not accepted: {reason}"))
-}
-
 #[derive(Clone, Debug, CandidType, Deserialize)]
 pub struct InitArgs {
     pub config: StreamConfig,
@@ -63,7 +37,7 @@ pub struct InitArgs {
 
 #[cfg_attr(target_family = "wasm", ic_cdk::init)]
 pub fn init(args: InitArgs) {
-    // Launch stays inert; reviewed unpause installs at most one reward-event timer.
+    // Launch stays inert until the automatic readiness check validates dependencies.
     let state = StreamStateV1 {
         launch_schema_marker: state::LAUNCH_SCHEMA_MARKER,
         config: args.config,
@@ -86,11 +60,13 @@ pub fn init(args: InitArgs) {
     };
     state::initialize(state, ic_cdk::api::canister_self())
         .unwrap_or_else(|error| ic_cdk::trap(&error));
+    reward_timer::install_readiness();
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::post_upgrade)]
 pub fn post_upgrade() {
     state::reopen(ic_cdk::api::canister_self());
+    reward_timer::install_readiness();
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::query)]
@@ -143,56 +119,6 @@ pub async fn resume_reward_backing() -> Result<RewardBackingProgress, ApiError> 
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::query)]
-pub fn validate_set_paused(paused: bool) -> Result<String, String> {
-    validate_set_paused_state(&state::read(), paused)
-}
-
-#[cfg_attr(target_family = "wasm", ic_cdk::update)]
-pub async fn set_paused(paused: bool) -> Result<(), ApiError> {
-    let caller = ic_cdk::api::msg_caller();
-    let snapshot = state::read();
-    if caller != snapshot.config.sns_governance {
-        return Err(ApiError::Unauthorized);
-    }
-    // SNS Governance runs the validator before proposal creation, but conditions can change
-    // before execution. The reviewed SNS implementation counts any target-method reply as
-    // success without decoding Candid Err, so a lifecycle request that was not accepted must
-    // reject at the transport boundary. A normal reply is reserved for the requested durable
-    // lifecycle state.
-    if (paused && snapshot.lifecycle == Lifecycle::Paused)
-        || (!paused && snapshot.lifecycle == Lifecycle::Ready)
-    {
-        return Ok(());
-    }
-    if let Err(reason) = validate_set_paused_state(&snapshot, paused) {
-        sns_reject("stream lifecycle action", reason);
-    }
-    let control_epoch = lifecycle::begin_control_request().map_err(ApiError::Invalid)?;
-    if paused {
-        lifecycle::set_paused();
-        reward_timer::install(None);
-        redemption_timer::cancel();
-        Ok(())
-    } else {
-        let result =
-            lifecycle::readiness_preflight(ic_cdk::api::canister_self(), control_epoch).await;
-        if state::read().lifecycle == Lifecycle::Ready {
-            reward_timer::install_for_ready_state();
-            redemption_timer::install_normal();
-            result
-        } else {
-            match result {
-                Ok(()) => sns_reject(
-                    "stream lifecycle action",
-                    "readiness returned without durable Ready state",
-                ),
-                Err(error) => sns_reject("stream lifecycle action", format!("{error:?}")),
-            }
-        }
-    }
-}
-
-#[cfg_attr(target_family = "wasm", ic_cdk::query)]
 pub fn get_status() -> Status {
     status::get_status()
 }
@@ -207,6 +133,7 @@ pub fn debug_get_state() -> StreamStateV1 {
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
 pub fn debug_replace_state(replacement: StreamStateV1) -> Result<(), String> {
     replacement.validate(ic_cdk::api::canister_self())?;
+    reward_timer::install(None);
     state::write(replacement);
     Ok(())
 }

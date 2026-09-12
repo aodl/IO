@@ -142,9 +142,8 @@ pub fn redemption_quote(
 
 pub fn backed_io(increment: u128, backing: u128, claims: u128) -> Result<u128, EconomicsError> {
     match (backing, claims) {
-        (0, 0) => Ok(increment),
+        (_, 0) => Ok(increment),
         (0, _) => Err(EconomicsError::UncoveredClaims),
-        (_, 0) => Err(EconomicsError::BackingWithoutClaims),
         _ => ratio(increment, claims, backing),
     }
 }
@@ -154,8 +153,7 @@ pub fn target(active: u128, backing: u128, claims: u128) -> Result<u128, Economi
         return Err(EconomicsError::ActiveExceedsClaims);
     }
     match (backing, claims, active) {
-        (0, 0, 0) => Ok(0),
-        (_, 0, 0) => Err(EconomicsError::BackingWithoutClaims),
+        (_, 0, 0) => Ok(0),
         (0, _, _) => Err(EconomicsError::UncoveredClaims),
         _ => ratio(active, backing, claims),
     }
@@ -302,12 +300,42 @@ mod tests {
     }
 
     #[test]
-    fn backed_release_handles_genesis_and_appreciated_rate() {
+    fn backed_release_bootstraps_only_against_the_new_increment() {
         assert_eq!(backed_io(100, 0, 0), Ok(100));
+        assert_eq!(backed_io(10, 5, 0), Ok(10));
         assert_eq!(backed_io(100, 1_000, 500), Ok(50));
         assert_eq!(backed_io(1, 0, 1), Err(EconomicsError::UncoveredClaims));
+    }
+
+    #[test]
+    fn first_claims_receive_existing_backing_as_surplus() {
+        let first_issuance = backed_io(10, 5, 0).unwrap();
+        let post_backing = 5 + 10;
+        let post_claims = first_issuance;
+        assert_eq!(first_issuance, 10);
         assert_eq!(
-            backed_io(1, 1, 0),
+            claim_rate(state(post_backing, 0, post_claims, 0)),
+            Ok(ClaimRate::Ratio {
+                backing: 15,
+                claims: 10,
+            })
+        );
+        assert_eq!(backed_io(6, post_backing, post_claims), Ok(4));
+        assert_eq!(
+            claim_rate(state(post_backing + 6, 0, post_claims + 4, 0)),
+            Ok(ClaimRate::Ratio {
+                backing: 21,
+                claims: 14,
+            })
+        );
+    }
+
+    #[test]
+    fn backing_without_claims_has_zero_structural_target_but_cannot_redeem() {
+        assert_eq!(target(0, 5, 0), Ok(0));
+        assert_eq!(target(1, 5, 0), Err(EconomicsError::ActiveExceedsClaims));
+        assert_eq!(
+            redemption_quote(state(5, 0, 0, 0), 1, 0),
             Err(EconomicsError::BackingWithoutClaims)
         );
     }

@@ -103,6 +103,8 @@ const STREAM_PRODUCTION_FORBIDDEN_DID: &[&str] = &[
     " advance_model_time :",
     "debug_",
     " get_events :",
+    " set_paused :",
+    " validate_set_paused :",
 ];
 
 const NNS_PRODUCTION_FORBIDDEN_DID: &[&str] = &[
@@ -118,6 +120,10 @@ const NNS_PRODUCTION_FORBIDDEN_DID: &[&str] = &[
     "debug_",
     " get_events :",
     " prove_maturity_mint :",
+    " start_maturity :",
+    " validate_start_maturity :",
+    " set_paused :",
+    " validate_set_paused :",
 ];
 
 const HISTORIAN_PRODUCTION_FORBIDDEN_DID: &[&str] = &[
@@ -1079,7 +1085,6 @@ fn check_simplicity_at(root: &Path) -> Result<(), String> {
         "SchemaV4",
         "SchemaV5",
         "SchemaV6",
-        "set_timer_interval",
     ];
 
     let mut combined_lines = 0usize;
@@ -1098,6 +1103,17 @@ fn check_simplicity_at(root: &Path) -> Result<(), String> {
             for needle in FORBIDDEN {
                 if text.contains(needle) {
                     return Err(format!("{} contains forbidden {needle:?}", path.display()));
+                }
+            }
+            if text.contains("set_timer_interval") {
+                let relative = path.strip_prefix(root).unwrap_or(&path);
+                if relative != Path::new("canisters/io_nns_neuron_manager/src/recovery_timer.rs")
+                    || text.matches("set_timer_interval_serial(").count() != 1
+                {
+                    return Err(format!(
+                        "{} contains an unapproved interval timer",
+                        path.display()
+                    ));
                 }
             }
             combined_lines += lines;
@@ -1325,8 +1341,6 @@ fn check_did_surface_at(root: &Path, check_wasm: bool) -> Result<(), String> {
             "  prove_claim_backing_receipt :",
             "  resume :",
             "  prove_active_transfer :",
-            "  set_paused :",
-            "  validate_set_paused :",
             "  get_status :",
         ],
     )?;
@@ -1352,11 +1366,8 @@ fn check_did_surface_at(root: &Path, check_wasm: bool) -> Result<(), String> {
             "  observe_dynamic_backing_status :",
             "  observe_pool_policy :",
             "  prepare_two_week_maturity :",
-            "  start_maturity :",
             "  resume :",
             "  prove_active_transfer :",
-            "  set_paused :",
-            "  validate_set_paused :",
             "  get_status :",
         ],
     )?;
@@ -3317,9 +3328,8 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
         &[
             "upgrade-sns-controlled-canister",
             "submit_inline_sns_upgrade",
-            "AddGenericNervousSystemFunction",
-            "validate_set_paused",
-            "ExecuteGenericNervousSystemFunction",
+            "activation=automatic",
+            "did not enter Ready automatically",
             "sns_governance_source_sha256",
             "sns_root_source_sha256",
             "sns_ledger_source_sha256",
@@ -3344,6 +3354,9 @@ fn check_local_sns_rehearsal_at(root: &Path) -> Result<(), String> {
         &governance_phase,
         &[
             "dfx canister install",
+            "AddGenericNervousSystemFunction",
+            "validate_set_paused",
+            "ExecuteGenericNervousSystemFunction",
             "\"$nns_manager\" observe_claim_assets",
             "\"$nns_manager\" observe_pool_policy",
         ],

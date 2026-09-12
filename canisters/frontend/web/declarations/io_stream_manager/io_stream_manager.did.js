@@ -198,16 +198,6 @@ export const idlFactory = ({ IDL }) => {
         [IDL.Variant({ 'Ok' : RewardEventObservation, 'Err' : ApiError })],
         [],
       ),
-    'set_paused' : IDL.Func(
-        [IDL.Bool],
-        [IDL.Variant({ 'Ok' : IDL.Null, 'Err' : ApiError })],
-        [],
-      ),
-    'validate_set_paused' : IDL.Func(
-        [IDL.Bool],
-        [IDL.Variant({ 'Ok' : IDL.Text, 'Err' : IDL.Text })],
-        ['query'],
-      ),
   });
 };
 export const init = ({ IDL }) => {

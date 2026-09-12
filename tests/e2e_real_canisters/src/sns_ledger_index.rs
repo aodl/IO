@@ -291,7 +291,7 @@ pub fn run_ledger_index_same_wasm_upgrade(required: bool) {
 
 pub fn run_installed_stream_redemption(required: bool) {
     use candid::{decode_one, encode_one};
-    use io_stream_manager::{Account, ApiError, InitArgs, Lifecycle, Status, StreamConfig};
+    use io_stream_manager::{Account, InitArgs, Lifecycle, Status, StreamConfig};
 
     let Some(artifacts) = maybe_artifacts(required) else {
         return;
@@ -435,12 +435,12 @@ pub fn run_installed_stream_redemption(required: bool) {
     )
     .unwrap();
     assert_eq!(status.lifecycle, Lifecycle::Paused);
-    let unpause: Result<(), ApiError> = decode_one(
-        &pic.update_call(stream, governance, "set_paused", encode_one(false).unwrap())
-            .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(unpause, Ok(()));
+    pic.advance_time(Duration::from_secs(1));
+    for _ in 0..40 {
+        pic.tick();
+    }
+    let ready: Status = icrc::query_one(&pic, stream, "get_status", ());
+    assert_eq!(ready.lifecycle, Lifecycle::Ready);
 
     let amount = 20_000_000u64;
     let staging: Account = icrc::query_one(&pic, stream, "get_redemption_staging_account", ());

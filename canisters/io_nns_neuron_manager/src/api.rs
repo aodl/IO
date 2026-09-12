@@ -233,13 +233,6 @@ pub async fn prove_active_transfer(block_index: u128) -> Result<NnsProgress, Api
     }
 }
 
-pub async fn start_maturity(
-    caller: Principal,
-    kind: MaturityKind,
-) -> Result<MaturityProgress, ApiError> {
-    crate::maturity_flow::start(caller, kind).await
-}
-
 pub async fn prepare_two_week_maturity(
     caller: Principal,
     args: PrepareTwoWeekMaturityArgs,
@@ -625,7 +618,8 @@ pub(crate) async fn observe_permanent_policy(
     let observation =
         execution::query_neuron_observation(&snapshot.config, snapshot.config.two_year_neuron_id)
             .await?;
-    execution::validate_permanent_configuration(&observation).map_err(ApiError::Invalid)?;
+    execution::validate_permanent_configuration(&observation, ic_cdk::api::canister_self())
+        .map_err(ApiError::Invalid)?;
     execution::validate_candidate_parent_staking_account(&snapshot.config, &observation)
         .map_err(ApiError::Invalid)?;
     if state::read() != *snapshot {
@@ -940,6 +934,7 @@ async fn pool_policy_observation(
             let observed = execution::query_neuron_observation(&snapshot.config, parent_id).await?;
             execution::validate_parent_configuration(
                 &observed,
+                ic_cdk::api::canister_self(),
                 FollowPolicy {
                     followee_neuron_id: snapshot.config.pooled_parent_followee_id,
                 },

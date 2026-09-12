@@ -96,6 +96,7 @@ pub fn classify_transfer(
 #[derive(Clone, Debug)]
 pub struct NeuronObservation {
     pub snapshot: NeuronSnapshot,
+    pub controller: Option<Principal>,
     pub maturity_e8s: u64,
     pub staked_maturity_e8s: u64,
     pub auto_stake_maturity: bool,
@@ -106,21 +107,29 @@ pub struct NeuronObservation {
 
 pub const APPROVED_PERMANENT_DISSOLVE_DELAY_SECONDS: u64 = 63_115_200;
 
-pub fn validate_permanent_configuration(observation: &NeuronObservation) -> Result<(), String> {
-    if !observation.auto_stake_maturity
-        && observation.dissolve_state
-            == Some(DissolveState::DissolveDelaySeconds(
-                APPROVED_PERMANENT_DISSOLVE_DELAY_SECONDS,
-            ))
-    {
-        Ok(())
-    } else {
-        Err("configured NNS neuron auto-stake or approved dissolve configuration drifted".into())
+pub fn validate_permanent_configuration(
+    observation: &NeuronObservation,
+    expected_controller: Principal,
+) -> Result<(), String> {
+    if observation.controller != Some(expected_controller) {
+        return Err("configured permanent NNS neuron controller drifted".into());
     }
+    if observation.auto_stake_maturity {
+        return Err("configured permanent NNS neuron auto-stake maturity is enabled".into());
+    }
+    if observation.dissolve_state
+        != Some(DissolveState::DissolveDelaySeconds(
+            APPROVED_PERMANENT_DISSOLVE_DELAY_SECONDS,
+        ))
+    {
+        return Err("configured permanent NNS neuron dissolve state or delay drifted".into());
+    }
+    Ok(())
 }
 
 pub fn validate_parent_configuration(
     observation: &NeuronObservation,
+    expected_controller: Principal,
     policy: FollowPolicy,
 ) -> Result<(), String> {
     let expected = [0, 4, 14];
@@ -131,6 +140,9 @@ pub fn validate_parent_configuration(
                 .iter()
                 .any(|(actual, ids)| actual == topic && ids == &[policy.followee_neuron_id])
         });
+    if observation.controller != Some(expected_controller) {
+        return Err("pooled parent controller drifted".into());
+    }
     if !observation.auto_stake_maturity
         && observation.dissolve_state
             == Some(DissolveState::DissolveDelaySeconds(
@@ -394,6 +406,7 @@ pub async fn query_neuron_observation(
             staking_subaccount,
             cached_stake_e8s: neuron.cached_neuron_stake_e8s.into(),
         },
+        controller: neuron.controller,
         maturity_e8s: neuron.maturity_e8s_equivalent,
         staked_maturity_e8s: neuron.staked_maturity_e8s_equivalent.unwrap_or(0),
         auto_stake_maturity: neuron.auto_stake_maturity.unwrap_or(false),
@@ -1038,6 +1051,7 @@ mod tests {
                 staking_subaccount: [1; 32],
                 cached_stake_e8s: 1,
             },
+            controller: Some(Principal::anonymous()),
             maturity_e8s: 1,
             staked_maturity_e8s: u64::MAX,
             auto_stake_maturity: false,
@@ -1074,13 +1088,21 @@ mod tests {
     #[test]
     fn later_retained_staked_maturity_is_valid_but_configuration_drift_is_not() {
         let valid = observation();
-        assert_eq!(validate_permanent_configuration(&valid), Ok(()));
+        assert_eq!(
+            validate_permanent_configuration(&valid, Principal::anonymous()),
+            Ok(())
+        );
         let mut auto = valid.clone();
         auto.auto_stake_maturity = true;
-        assert!(validate_permanent_configuration(&auto).is_err());
+        assert!(validate_permanent_configuration(&auto, Principal::anonymous()).is_err());
         let mut dissolving = valid;
         dissolving.dissolve_state = Some(DissolveState::WhenDissolvedTimestampSeconds(u64::MAX));
-        assert!(validate_permanent_configuration(&dissolving).is_err());
+        assert!(validate_permanent_configuration(&dissolving, Principal::anonymous()).is_err());
+        let mut wrong_controller = observation();
+        wrong_controller.controller = Some(Principal::from_slice(&[1]));
+        assert!(
+            validate_permanent_configuration(&wrong_controller, Principal::anonymous()).is_err()
+        );
     }
 
     #[test]

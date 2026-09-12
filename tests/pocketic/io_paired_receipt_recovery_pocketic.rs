@@ -1,4 +1,4 @@
-use candid::{decode_one, encode_one, CandidType, Principal};
+use candid::{decode_one, encode_one, CandidType, Nat, Principal};
 use io_receipt_types::{ClaimBackingReceiptKind, PrepareClaimBackingReceiptArgs};
 use io_stream_manager::{
     state::{DispatchEpoch, StreamOperation},
@@ -7,6 +7,7 @@ use io_stream_manager::{
 };
 use pocket_ic::PocketIc;
 use serde::Deserialize;
+use std::time::Duration;
 
 const CYCLES: u128 = 2_000_000_000_000;
 
@@ -27,13 +28,7 @@ struct LatestRewardEventFixture {
     rounds_since_last_distribution: u64,
     end_timestamp_seconds: u64,
     settled_proposal_ids: Vec<u64>,
-    neuron_reward_shares: Vec<(u64, SnsUint128)>,
-}
-
-#[derive(Clone, Copy, Debug, CandidType, Deserialize)]
-struct SnsUint128 {
-    high: u64,
-    low: u64,
+    neuron_reward_shares: Vec<(u64, Nat)>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
@@ -229,7 +224,10 @@ fn malformed_receipt_prepare_replays_and_survives_same_schema_restart() {
             DebugMintAccountArgs { to, amount_e8s },
         );
     }
-    update::<_, Result<(), ApiError>>(&pic, stream, governance, "set_paused", false).unwrap();
+    pic.advance_time(Duration::from_secs(1));
+    for _ in 0..40 {
+        pic.tick();
+    }
     let activated: StreamStateV1 = query(&pic, stream, "debug_get_state");
     assert_eq!(activated.lifecycle, Lifecycle::Ready);
     assert_eq!(

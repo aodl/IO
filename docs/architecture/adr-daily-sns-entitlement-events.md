@@ -24,7 +24,8 @@ opportunity.
 IO first sums the canonical `reward_shares` tagged with that event's exact end
 timestamp across every neuron, including excluded or currently ineligible
 neurons. An absent or stale field contributes zero. A current-event
-participation field without its `Uint128` value fails closed. The eligible
+participation field without its Candid `nat` value fails closed. Conversion to
+IO's internal `u128` accounting is checked; values above `u128::MAX` fail closed. The eligible
 credit is then:
 
 ```text

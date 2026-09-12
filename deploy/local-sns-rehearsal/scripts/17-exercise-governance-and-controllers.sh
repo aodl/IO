@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Requires IO_LOCAL_SNS_REHEARSAL_ACK=local-only.
-# signed Governance lifecycle activation and controller/upgrade proof.
+# SNS-controlled upgrade proof plus autonomous IO readiness observation.
 # The maintained `sns upgrade-sns-controlled-canister` command remains recorded
 # as blocked only by local chunk-store authorization; the inline proposal below
 # still follows the authentic SNS Governance -> Root execution path.
@@ -143,7 +143,7 @@ if ! phase_is_done 17-manager-upgrade-restart; then
   manager_upgrade_arg="$(didc encode '()')"
   manager_proposal_id="$(submit_inline_sns_upgrade "$log_file" \
     'Restart exact current IO NNS manager release' \
-    'Local-only same-release deterministic gzip payload through SNS Governance and Root before authenticated activation. The installed module hash is the gzip payload hash; the release manifest independently binds it to the exact raw Wasm.' \
+    'Local-only same-release deterministic gzip payload through SNS Governance and Root before automatic protocol revalidation. The installed module hash is the gzip payload hash; the release manifest independently binds it to the exact raw Wasm.' \
     "$nns_manager" "$manager_payload_path" "$manager_upgrade_arg")"
   wait_sns_proposal "$log_file" "$manager_proposal_id"
   manager_after="$(dfx canister info --network "$network_url" --identity "$identity" "$nns_manager" 2>&1 | sed -n 's/^Module hash: 0x//p')"
@@ -162,14 +162,6 @@ if ! phase_is_done 17-manager-upgrade-restart; then
     "target=${nns_manager} path=inline-governance-root proposal_id=${manager_proposal_id} before_raw_module=${manager_before} payload_gzip_sha256=${manager_payload_hash} after_gzip_module=${manager_after} release_manifest_raw_sha256=${manager_raw_hash} transport=gzip lifecycle=Paused exact_current_release=true"
 fi
 
-# The Candid paths cannot be derived from principals, so register each manager explicitly.
-if ! phase_is_done 17-stream-function-registered; then
-  function_id="$(runtime_value governance stream_lifecycle_function_id)"
-  action="variant { AddGenericNervousSystemFunction = record { id = ${function_id} : nat64; name = \"Set IO stream lifecycle\"; description = opt \"Pause or unpause the local IO stream through authenticated SNS Governance.\"; function_type = opt variant { GenericNervousSystemFunction = record { validator_canister_id = opt principal \"${stream}\"; target_canister_id = opt principal \"${stream}\"; validator_method_name = opt \"validate_set_paused\"; target_method_name = opt \"set_paused\"; topic = opt variant { CriticalDappOperations } } } } }"
-  proposal_id="$(submit_sns_proposal "$log_file" 'Register IO stream lifecycle' 'Local-only registration of the exact stream validator and execution methods.' "$action")"
-  wait_sns_proposal "$log_file" "$proposal_id"
-  mark_phase_done 17-stream-function-registered "function_id=${function_id} proposal_id=${proposal_id}"
-fi
 if ! phase_is_done 17-excluded-account-preflight; then
   governance="$(sns_canister_id governance)"
   ledger="$(sns_canister_id ledger)"
@@ -189,39 +181,19 @@ if ! phase_is_done 17-excluded-account-preflight; then
   mark_phase_done 17-excluded-account-preflight \
     "name=sns-treasury owner=${governance} subaccount_hex=${treasury_subaccount} balance_e8s=${treasury_balance}"
 fi
-if ! phase_is_done 17-nns-function-registered; then
-  function_id="$(runtime_value governance nns_lifecycle_function_id)"
-  action="variant { AddGenericNervousSystemFunction = record { id = ${function_id} : nat64; name = \"Set IO NNS manager lifecycle\"; description = opt \"Pause or unpause the local IO NNS manager through authenticated SNS Governance.\"; function_type = opt variant { GenericNervousSystemFunction = record { validator_canister_id = opt principal \"${nns_manager}\"; target_canister_id = opt principal \"${nns_manager}\"; validator_method_name = opt \"validate_set_paused\"; target_method_name = opt \"set_paused\"; topic = opt variant { CriticalDappOperations } } } } }"
-  proposal_id="$(submit_sns_proposal "$log_file" 'Register IO NNS manager lifecycle' 'Local-only registration of the exact NNS manager validator and execution methods.' "$action")"
-  wait_sns_proposal "$log_file" "$proposal_id"
-  mark_phase_done 17-nns-function-registered "function_id=${function_id} proposal_id=${proposal_id}"
-fi
 if ! phase_is_done 17-nns-activated; then
-  function_id="$(runtime_value governance nns_lifecycle_function_id)"
-  action="variant { ExecuteGenericNervousSystemFunction = record { function_id = ${function_id} : nat64; payload = blob \"DIDL\\00\\01~\\00\" } }"
-  proposal_id="$(submit_sns_proposal "$log_file" 'Activate IO NNS manager' 'Local-only authenticated transition from Paused to Ready.' "$action")"
-  wait_sns_proposal "$log_file" "$proposal_id"
-  activation_proposals="${proposal_id}"
   status=''
-  for _attempt in $(seq 1 12); do
+  for _attempt in $(seq 1 30); do
     status="$(dfx canister call --network "$network_url" --identity "$identity" --query --candid \
       "${REPO_ROOT}/canisters/io_nns_neuron_manager/io_nns_neuron_manager.did" "$nns_manager" get_status '()')"
     printf '%s\n' "$status" >> "$log_file"
     if printf '%s' "$status" | grep -q Ready; then
       break
     fi
-    if printf '%s' "$status" | grep -q 'active_operation = opt "Pool"'; then
-      run_logged "$log_file" dfx canister call --network "$network_url" --identity "$identity" \
-        --candid "${REPO_ROOT}/canisters/io_nns_neuron_manager/io_nns_neuron_manager.did" \
-        "$nns_manager" resume '()'
-      continue
-    fi
-    retry_proposal="$(submit_sns_proposal "$log_file" 'Complete IO NNS manager activation' 'Local-only authenticated completion after durable Dynamic-parent bootstrap.' "$action")"
-    wait_sns_proposal "$log_file" "$retry_proposal"
-    activation_proposals="${activation_proposals},${retry_proposal}"
+    sleep 5
   done
   printf '%s' "$status" | grep -q Ready || {
-    record_blocker 'NNS manager did not reach Ready after bounded Dynamic-parent bootstrap recovery and authenticated readiness retries'
+    record_blocker 'NNS manager did not reach Ready after bounded automatic Dynamic-parent bootstrap recovery and readiness retries'
     exit 2
   }
   printf '%s' "$status" | grep -q 'two_year_maturity_baseline_reconciled = true' || {
@@ -256,23 +228,26 @@ if ! phase_is_done 17-nns-activated; then
     record_blocker 'NNS manager unexpectedly recorded a claim target during anchor-only bootstrap'
     exit 2
   }
-  mark_phase_done 17-nns-activated "function_id=${function_id} proposal_ids=${activation_proposals} lifecycle=Ready permanent_baseline_reconciled=true dynamic_parent=present anchor_available_e8s=${anchor_target} excluded_dynamic_surplus_e8s=${expected_surplus}"
+  mark_phase_done 17-nns-activated "activation=automatic lifecycle=Ready permanent_baseline_reconciled=true dynamic_parent=present anchor_available_e8s=${anchor_target} excluded_dynamic_surplus_e8s=${expected_surplus}"
 fi
 
 # Stream readiness observes the NNS Manager's canonical claim assets and policy.
-# Activate it only after authenticated NNS readiness has established the Dynamic
-# parent and permanent-neuron baseline; otherwise the SNS target must reject.
+# It becomes Ready automatically after NNS readiness has established the Dynamic
+# parent and permanent-neuron baseline.
 if ! phase_is_done 17-stream-activated; then
-  function_id="$(runtime_value governance stream_lifecycle_function_id)"
-  action="variant { ExecuteGenericNervousSystemFunction = record { function_id = ${function_id} : nat64; payload = blob \"DIDL\\00\\01~\\00\" } }"
-  proposal_id="$(submit_sns_proposal "$log_file" 'Activate IO stream' 'Local-only authenticated transition from Paused to Ready after NNS readiness.' "$action")"
-  wait_sns_proposal "$log_file" "$proposal_id"
-  status="$(dfx canister call --network "$network_url" --identity "$identity" --query --candid \
-    "${REPO_ROOT}/canisters/io_stream_manager/io_stream_manager.did" "$stream" get_status '()')"
-  printf '%s\n' "$status" >> "$log_file"
-  printf '%s' "$status" | grep -q Ready || { record_blocker 'stream did not enter Ready through SNS Governance after NNS readiness'; exit 2; }
-  mark_phase_done 17-stream-activated "function_id=${function_id} proposal_id=${proposal_id} nns_ready_first=true"
+  status=''
+  for _attempt in $(seq 1 30); do
+    status="$(dfx canister call --network "$network_url" --identity "$identity" --query --candid \
+      "${REPO_ROOT}/canisters/io_stream_manager/io_stream_manager.did" "$stream" get_status '()')"
+    printf '%s\n' "$status" >> "$log_file"
+    if printf '%s' "$status" | grep -q Ready; then
+      break
+    fi
+    sleep 5
+  done
+  printf '%s' "$status" | grep -q Ready || { record_blocker 'stream did not enter Ready automatically after NNS readiness'; exit 2; }
+  mark_phase_done 17-stream-activated "activation=automatic lifecycle=Ready nns_ready_first=true"
 fi
 
-mark_phase_done 17-exercise-governance-and-controllers "controllers checked; upgrade result and authenticated lifecycle proposals recorded"
-printf 'Governance activation complete; rerun phase 15 for production redemption, then phase 16 for final histories.\n'
+mark_phase_done 17-exercise-governance-and-controllers "controllers checked; SNS-controlled upgrade and autonomous IO readiness recorded"
+printf 'Governance upgrade and autonomous readiness complete; rerun phase 15 for production redemption, then phase 16 for final histories.\n'

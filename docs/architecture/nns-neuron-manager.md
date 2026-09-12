@@ -51,6 +51,12 @@ earliest active retry or child `ready_at_seconds` after restart/upgrade and
 invokes the same state-aware recovery logic; it never blindly repeats an
 ambiguous effect or authorizes unrelated work while Paused.
 
+One independent volatile seven-day interval offers permanent-neuron maturity
+to that same durable maturity flow. It has no stable cadence state. Unrelated
+passive maturity and future unwind cohorts remain recoverable without
+suppressing the opportunity; the single active-operation slot still serializes
+work that is actually ready.
+
 Maturity uses two fixed, domain-separated semantic Accounts. After canonical
 `DisburseMaturity(100%)` finalization, the complete positive role balance is
 captured once; late value remains for the next capture and the other role

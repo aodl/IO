@@ -9,7 +9,7 @@ use io_governance_types::{
     SnsProductionListNeuronsRequest, SnsProductionListNeuronsResponse,
     SnsProductionManageNeuronRequest, SnsProductionManageNeuronResponse, SnsProposal,
     SnsProposalId, SnsProposalIdRecord, SnsProposalPage, SnsProposalPageRequest, SnsRewardEvent,
-    SnsRewardEventParticipation, SnsTopicFollowees, SnsUint128,
+    SnsRewardEventParticipation, SnsTopicFollowees,
 };
 use io_ledger_types::{Account, IcrcAccount, Subaccount};
 use io_sns_lifecycle::{
@@ -45,7 +45,7 @@ pub struct LatestRewardEventFixture {
     pub rounds_since_last_distribution: u64,
     pub end_timestamp_seconds: u64,
     pub settled_proposal_ids: Vec<u64>,
-    pub neuron_reward_shares: Vec<(u64, SnsUint128)>,
+    pub neuron_reward_shares: Vec<(u64, Nat)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
@@ -96,7 +96,7 @@ struct SnsState {
     io_ledger: Option<Principal>,
     available: bool,
     latest_reward_event: SnsRewardEvent,
-    latest_reward_shares: BTreeMap<u64, SnsUint128>,
+    latest_reward_shares: BTreeMap<u64, Nat>,
     reward_round_duration_seconds: u64,
     max_number_of_neurons: u64,
     claim_or_refresh_mode: ClaimOrRefreshMode,
@@ -124,7 +124,7 @@ pub fn debug_add_neuron(neuron: MockSnsNeuron) {
         let state = cell.borrow();
         (
             state.latest_reward_event.clone(),
-            state.latest_reward_shares.get(&neuron.neuron_id).copied(),
+            state.latest_reward_shares.get(&neuron.neuron_id).cloned(),
         )
     });
     let production: SnsNeuron = mock_to_production_neuron(&neuron, &reward_event, reward_shares)
@@ -527,7 +527,7 @@ fn mock_neuron_id(id: u64) -> Vec<u8> {
 fn mock_to_production_neuron(
     neuron: &MockSnsNeuron,
     latest_reward_event: &SnsRewardEvent,
-    reward_shares: Option<SnsUint128>,
+    reward_shares: Option<Nat>,
 ) -> SnsNeuronRecord {
     SnsNeuronRecord {
         id: Some(SnsNeuronIdRecord {
@@ -554,9 +554,7 @@ fn mock_to_production_neuron(
         topic_followees: None::<SnsTopicFollowees>,
         latest_reward_event_participation: reward_shares.map(|reward_shares| {
             SnsRewardEventParticipation {
-                reward_event_end_timestamp_seconds: latest_reward_event
-                    .end_timestamp_seconds
-                    .unwrap_or_default(),
+                reward_event_end_timestamp_seconds: latest_reward_event.end_timestamp_seconds,
                 reward_shares: Some(reward_shares),
             }
         }),
@@ -590,7 +588,7 @@ pub fn list_neurons(request: SnsProductionListNeuronsRequest) -> SnsProductionLi
                 mock_to_production_neuron(
                     neuron,
                     &state.latest_reward_event,
-                    state.latest_reward_shares.get(&neuron.neuron_id).copied(),
+                    state.latest_reward_shares.get(&neuron.neuron_id).cloned(),
                 )
             })
             .collect();
@@ -611,7 +609,7 @@ pub fn get_neuron(request: SnsProductionGetNeuronRequest) -> SnsProductionGetNeu
                 SnsGetNeuronResult::Neuron(Box::new(mock_to_production_neuron(
                     neuron,
                     &state.latest_reward_event,
-                    state.latest_reward_shares.get(&neuron.neuron_id).copied(),
+                    state.latest_reward_shares.get(&neuron.neuron_id).cloned(),
                 )))
             })
     });
@@ -686,7 +684,7 @@ pub async fn manage_neuron(
                     mock_to_production_neuron(
                         neuron,
                         &reward_event,
-                        reward_shares.get(&neuron.neuron_id).copied(),
+                        reward_shares.get(&neuron.neuron_id).cloned(),
                     )
                     .try_into()
                     .expect("mock neuron should convert to production-shaped domain neuron")

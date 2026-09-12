@@ -258,4 +258,19 @@ mod tests {
         assert_eq!(quote.gross_icp, 200);
         assert_eq!(quote.net_icp, 190);
     }
+
+    #[test]
+    fn backing_without_claims_is_not_redemption_ready() {
+        let snapshot = ClaimSnapshot {
+            claim_supply_e8s: 0,
+            total_claim_backing_e8s: 2_000,
+            liquid_icp_e8s: 2_000,
+            icp_fee_e8s: 10,
+            ..Default::default()
+        };
+        assert_eq!(
+            quote_for_amount(100, &snapshot),
+            Err("canonical claim snapshot is not redemption-ready".into())
+        );
+    }
 }

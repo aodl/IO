@@ -65,7 +65,7 @@ canonical evidence commit `608baa58425389827acf3a5c051d71160cd829f7`.
 Earlier packages remain historical as described in
 `local-sns-evidence-disposition.md`.
 
-The maintained package includes a renderable local `sns_init` candidate, per-run runtime inputs, evidence capture helpers, no-network validators, and restartable phases 10–19. Those phases verify exact IO release provenance, install Paused dapps, provision canonical staging fee floats and source-shaped local NNS neurons, publish a reviewed Governance/Root bundle through executed local NNS Governance proposals into SNS-W, verify exact compressed hashes, finalize and discover the SNS, submit real treasury and lifecycle proposals, exercise production redemption, capture index/archive/controller evidence, observe one reward event, run the layered account-semantic protocol cases and package evidence fail closed. The prior one-component candidate-Governance/official-Root `unit_variant` incompatibility is historical; same-source candidate Governance/Root compatibility is proved. If the maintained chunk-store CLI route fails before execution, phase 17 submits the exact release Wasm inline through a signed SNS Governance proposal and Root. The inline payload avoids only the unavailable upload store; it does not bypass Governance. Same-release manager upgrades must reopen Paused and resume exact retained operations after authenticated readiness restoration. The current package records one coherent fresh run and restart-safe phase recovery; the thin lifecycle source profile is separate runner coverage and does not retroactively qualify or invalidate any package.
+The maintained package includes a renderable local `sns_init` candidate, per-run runtime inputs, evidence capture helpers, no-network validators, and restartable phases 10–19. Those phases verify exact IO release provenance, install Paused dapps, provision canonical staging fee floats and source-shaped local NNS neurons, publish a reviewed Governance/Root bundle through executed local NNS Governance proposals into SNS-W, verify exact compressed hashes, finalize and discover the SNS, submit the real treasury proposal, observe automatic IO readiness, exercise production redemption, capture index/archive/controller evidence, observe one reward event, run the layered account-semantic protocol cases and package evidence fail closed. The prior one-component candidate-Governance/official-Root `unit_variant` incompatibility is historical; same-source candidate Governance/Root compatibility is proved. If the maintained chunk-store CLI route fails before execution, phase 17 submits the exact release Wasm inline through a signed SNS Governance proposal and Root. The inline payload avoids only the unavailable upload store; it does not bypass Governance. Same-release manager upgrades reopen Paused, recover exact retained operations, and restore readiness automatically. The selected older package remains immutable evidence for its source; a run of this revised flow must produce a new source-bound package.
 
 The maintained phase order intentionally activates Stream while SNS Governance
 still exposes its canonical dummy genesis reward event: round zero, nonzero end
@@ -104,15 +104,11 @@ zero-credit structural continuation; the observer boundedly settles that same
 generation and continues until it proves the one-time reward checkpoint.
 Structural work does not consume the reward event or increment reward credit.
 If it legitimately occupies the NNS Manager's single immediate slot, the
-maintained order does not suppress, cancel, or preempt Pool. The two-year
-maturity validator must reject proposal submission while Pool is visible. After bounded
-production `resume_reward_backing`, Stream `resume`, NNS `resume`, and any exact
-transfer proof settle the canonical target, a fresh proposal is submitted and
-must be recorded executed only when exact TwoYear work is actually durable.
-Execution repeats the same acceptance checks to cover a validator/execution
-race. The reviewed SNS target boundary regards any normal reply as success, so
-an unaccepted IO generic action must reject at transport level rather than rely
-on a Candid `Err` payload.
+maintained order does not suppress, cancel, or preempt Pool. The weekly
+two-year maturity opportunity observes Busy and leaves the existing recovery
+path in control. Deterministic Stream/NNS continuation and exact transfer proof
+need no SNS proposal; exact proof remains manual only for the rare case where a
+persisted transfer is genuinely ambiguous.
 
 ## Manual Flow
 

@@ -72,32 +72,19 @@ fn stream_status(pic: &PocketIc, stream: Principal) -> Status {
     .expect("decode stream status")
 }
 
-fn restore_stream_readiness(pic: &PocketIc, stream: Principal, governance: Principal) {
-    let paused: Result<(), ApiError> = decode_one(
-        &pic.update_call(
-            stream,
-            governance,
-            "set_paused",
-            encode_one(true).expect("encode controlled reward recovery pause"),
-        )
-        .expect("pause stream for controlled reward recovery"),
-    )
-    .expect("decode controlled reward recovery pause");
-    println!("controlled_reward_recovery_pause={paused:#?}");
-    assert_eq!(paused, Ok(()));
-
-    let ready: Result<(), ApiError> = decode_one(
-        &pic.update_call(
-            stream,
-            governance,
-            "set_paused",
-            encode_one(false).expect("encode controlled reward recovery readiness"),
-        )
-        .expect("restore stream readiness for controlled reward recovery"),
-    )
-    .expect("decode controlled reward recovery readiness");
-    println!("controlled_reward_recovery_ready={ready:#?}");
-    assert_eq!(ready, Ok(()));
+fn restore_stream_readiness(pic: &PocketIc, stream: Principal) {
+    for attempt in 0..30 {
+        let status = stream_status(pic, stream);
+        if status.lifecycle == io_stream_manager::Lifecycle::Ready {
+            println!("automatic_reward_recovery_ready_after_attempt={attempt}");
+            return;
+        }
+        pic.advance_time(Duration::from_secs(60));
+        for _ in 0..20 {
+            pic.tick();
+        }
+    }
+    panic!("Stream did not restore Ready through automatic recovery");
 }
 
 fn resume_reward(pic: &PocketIc, stream: Principal) -> Result<RewardEventObservation, ApiError> {
@@ -413,7 +400,7 @@ fn main() {
 
     if std::env::var_os("IO_LOCAL_REWARD_RESUME").is_some() {
         if before.reward_processing_paused {
-            restore_stream_readiness(&pic, stream, governance);
+            restore_stream_readiness(&pic, stream);
         }
         if !canonical_two_event || before.processed_reward_event_count == 0 {
             // A structural observation is allowed to start ordinary backing
@@ -496,7 +483,7 @@ fn main() {
 
         if canonical_two_event {
             drive_reconciliation(&pic, stream);
-            restore_stream_readiness(&pic, stream, governance);
+            restore_stream_readiness(&pic, stream);
             let structural = resume_reward(&pic, stream);
             println!("canonical_structural_refresh={structural:#?}");
             assert!(matches!(
@@ -526,7 +513,7 @@ fn main() {
             let final_before = stream_status(&pic, stream);
             println!("canonical_stream_status_before={final_before:#?}");
             if final_before.reward_processing_paused {
-                restore_stream_readiness(&pic, stream, governance);
+                restore_stream_readiness(&pic, stream);
             }
             if final_before.processed_reward_event_count >= 2
                 && final_before.latest_reward_event_classification

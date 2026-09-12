@@ -117,11 +117,19 @@ The receipt uses the pre-inflow rate:
 maximum_backed_IO = floor(net_liquid_credit * C0 / B0)
 ```
 
-True empty genesis uses one IO per net claim-backing ICP. Every successfully
-delivered IO increases `C`; maturity settlement does not assume that a
-recipient remains structurally active and does not supply a synthetic `dA`.
-The next daily observation derives `A_backing` and `A_reward` from canonical
-SNS state and staking-account ledger balances.
+Whenever `C=0`, the first supply-paired receipt issues one IO per unit of that
+receipt's net claim-backing credit, even if unpaired yield or unsolicited dust
+has already made `B>0`. It does not issue IO against that pre-existing backing.
+The surplus instead benefits the first claim-bearing supply: for example,
+`B=5`, `C=0`, and a new credit of 10 issue 10 IO and leave `B=15`, `C=10`.
+The structural target is zero while both `C=0` and `A_backing=0`; a nonzero
+active amount with zero claims remains invalid. Claim-rate reporting continues
+to identify `B>0,C=0` as backing without claims, so redemption remains
+unavailable until the first paired issuance. Every successfully delivered IO
+increases `C`; maturity settlement does not assume that a recipient remains
+structurally active and does not supply a synthetic `dA`. The next daily
+observation derives `A_backing` and `A_reward` from canonical SNS state and
+staking-account ledger balances.
 
 ### Jupiter
 

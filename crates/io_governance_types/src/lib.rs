@@ -1149,31 +1149,25 @@ pub struct SnsNeuron {
     pub latest_reward_event_participation: Option<SnsRewardEventParticipation>,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
-pub struct SnsUint128 {
-    pub high: u64,
-    pub low: u64,
-}
-
-impl SnsUint128 {
-    pub fn exact(self) -> u128 {
-        (u128::from(self.high) << 64) | u128::from(self.low)
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct SnsRewardEventParticipation {
-    pub reward_event_end_timestamp_seconds: u64,
-    pub reward_shares: Option<SnsUint128>,
+    pub reward_event_end_timestamp_seconds: Option<u64>,
+    pub reward_shares: Option<Nat>,
 }
 
 impl SnsRewardEventParticipation {
-    pub fn exact_reward_shares(self) -> Result<u128, SnsGovernanceError> {
+    pub fn exact_reward_shares(&self) -> Result<u128, SnsGovernanceError> {
         self.reward_shares
-            .map(SnsUint128::exact)
+            .as_ref()
             .ok_or_else(|| SnsGovernanceError::DecodeError {
                 message: "latest_reward_event_participation is present without reward_shares"
                     .to_string(),
+            })?
+            .0
+            .clone()
+            .try_into()
+            .map_err(|_| SnsGovernanceError::DecodeError {
+                message: "latest_reward_event_participation.reward_shares exceeds u128".to_string(),
             })
     }
 }
@@ -2375,27 +2369,38 @@ mod tests {
             SnsDissolveStateRecord::DissolveDelaySeconds(SNS_USER_DISSOLVE_DELAY_SECONDS),
         );
         candidate.latest_reward_event_participation = Some(SnsRewardEventParticipation {
-            reward_event_end_timestamp_seconds: 1_209_600,
-            reward_shares: Some(SnsUint128 {
-                high: 0x0123_4567_89ab_cdef,
-                low: 0xfedc_ba98_7654_3210,
-            }),
+            reward_event_end_timestamp_seconds: Some(1_209_600),
+            reward_shares: Some(Nat::from(
+                (u128::from(0x0123_4567_89ab_cdef_u64) << 64)
+                    | u128::from(0xfedc_ba98_7654_3210_u64),
+            )),
         });
         let bytes = Encode!(&candidate).unwrap();
         let decoded = Decode!(&bytes, SnsNeuronRecord).unwrap();
         let participation = decoded.latest_reward_event_participation.unwrap();
-        assert_eq!(participation.reward_event_end_timestamp_seconds, 1_209_600);
+        assert_eq!(
+            participation.reward_event_end_timestamp_seconds,
+            Some(1_209_600)
+        );
         assert_eq!(
             participation.exact_reward_shares().unwrap(),
             (u128::from(0x0123_4567_89ab_cdef_u64) << 64) | u128::from(0xfedc_ba98_7654_3210_u64)
         );
 
         let malformed = SnsRewardEventParticipation {
-            reward_event_end_timestamp_seconds: 1,
+            reward_event_end_timestamp_seconds: Some(1),
             reward_shares: None,
         };
         assert!(matches!(
             malformed.exact_reward_shares(),
+            Err(SnsGovernanceError::DecodeError { .. })
+        ));
+        let too_large = SnsRewardEventParticipation {
+            reward_event_end_timestamp_seconds: Some(1),
+            reward_shares: Some(Nat::from(u128::MAX) + Nat::from(1_u8)),
+        };
+        assert!(matches!(
+            too_large.exact_reward_shares(),
             Err(SnsGovernanceError::DecodeError { .. })
         ));
     }

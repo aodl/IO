@@ -38,7 +38,7 @@ pub fn debug_install_at(deadline_seconds: u64) {
 pub(crate) fn install_for_ready_state() {
     let state = crate::state::read();
     if state.lifecycle != Lifecycle::Ready || state.reward_checkpoint.reward_processing_paused {
-        install(None);
+        install_retry();
         return;
     }
     let now = ic_cdk::api::time() / 1_000_000_000;
@@ -100,6 +100,10 @@ pub(crate) fn install_retry() {
     install((ic_cdk::api::time() / 1_000_000_000).checked_add(RETRY_DELAY_SECONDS));
 }
 
+pub(crate) fn install_readiness() {
+    install((ic_cdk::api::time() / 1_000_000_000).checked_add(1));
+}
+
 pub(crate) fn install(deadline_seconds: Option<u64>) {
     let retained = ACTIVE_SCHEDULER_TIMER.with(|slot| {
         let mut slot = slot.borrow_mut();
@@ -129,6 +133,36 @@ pub(crate) fn install(deadline_seconds: Option<u64>) {
         });
         let mut state = crate::state::read();
         if state.lifecycle != Lifecycle::Ready || state.reward_checkpoint.reward_processing_paused {
+            if state.lifecycle == Lifecycle::Ready {
+                state.lifecycle = Lifecycle::Paused;
+                crate::state::write(state.clone());
+            }
+            if state.active_operation.is_some() {
+                if let Err(error) = crate::api::resume_stream(ic_cdk::api::time()).await {
+                    ic_cdk::api::debug_print(format!(
+                        "stream recovery remains pending before readiness: {error:?}"
+                    ));
+                    install_retry();
+                    return;
+                }
+                state = crate::state::read();
+            }
+            if state.active_operation.is_some() || state.prepared_exit_reconciliation.is_some() {
+                install_retry();
+                return;
+            }
+            let result = crate::lifecycle::readiness_preflight(
+                ic_cdk::api::canister_self(),
+                state.control_epoch,
+            )
+            .await;
+            if let Err(error) = result {
+                ic_cdk::api::debug_print(format!("stream readiness remains pending: {error:?}"));
+                install_retry();
+                return;
+            }
+            install_for_ready_state();
+            crate::redemption_timer::install_normal();
             return;
         }
         let now_nanos = ic_cdk::api::time();

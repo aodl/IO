@@ -7,9 +7,10 @@ use sha2::{Digest, Sha256};
 fn validate_prelaunch_baseline(
     role: &str,
     seeded_principal_e8s: u128,
+    expected_controller: candid::Principal,
     observation: &crate::execution::NeuronObservation,
 ) -> Result<(), crate::api::ApiError> {
-    crate::execution::validate_permanent_configuration(observation)
+    crate::execution::validate_permanent_configuration(observation, expected_controller)
         .map_err(crate::api::ApiError::Invalid)?;
     let observed_principal_e8s = observation.snapshot.cached_stake_e8s;
     if observed_principal_e8s != seeded_principal_e8s {
@@ -17,16 +18,10 @@ fn validate_prelaunch_baseline(
             "{role} principal {observed_principal_e8s} does not match seeded principal {seeded_principal_e8s}"
         )));
     }
-    if observation.maturity_e8s != 0 || observation.staked_maturity_e8s != 0 {
-        return Err(crate::api::ApiError::Pending(format!(
-            "BaselineUnreconciled: {role} has ordinary/staked maturity {}/{} e8s",
-            observation.maturity_e8s, observation.staked_maturity_e8s
-        )));
-    }
     if !observation.maturity_disbursements.is_empty() {
-        return Err(crate::api::ApiError::Pending(
-            "BaselineUnreconciled: {role} has a pending maturity disbursement".into(),
-        ));
+        return Err(crate::api::ApiError::Pending(format!(
+            "BaselineUnreconciled: {role} has a pending maturity disbursement"
+        )));
     }
     Ok(())
 }
@@ -62,11 +57,7 @@ pub async fn readiness_preflight(
         Some(state::NnsOperation::Pool(ref operation))
             if operation.kind == PoolCommandKind::Bootstrap
     );
-    if (snapshot.active_operation.is_some() && !launch_bootstrap_active)
-        || snapshot.pending_two_year_maturity.is_some()
-        || snapshot.pending_two_week_maturity.is_some()
-        || !snapshot.live_cohorts.is_empty()
-    {
+    if snapshot.active_operation.is_some() && !launch_bootstrap_active {
         return Err(crate::api::ApiError::Busy);
     }
     snapshot
@@ -86,6 +77,7 @@ pub async fn readiness_preflight(
         validate_prelaunch_baseline(
             "two-year protected NNS neuron",
             snapshot.config.audited_permanent_principal_e8s,
+            canister_self,
             &permanent,
         )?;
     }
@@ -113,6 +105,7 @@ pub async fn readiness_preflight(
         crate::execution::query_neuron_observation(&snapshot.config, parent_id).await?;
     crate::execution::validate_parent_configuration(
         &observation,
+        canister_self,
         io_nns_types::backing::FollowPolicy {
             followee_neuron_id: snapshot.config.pooled_parent_followee_id,
         },
@@ -127,13 +120,9 @@ pub async fn readiness_preflight(
     )?;
     crate::api::best_effort_voting_power_maintenance(&snapshot).await?;
     let latest = state::read();
-    if latest.active_operation.is_some()
-        || latest.pending_two_year_maturity.is_some()
-        || latest.pending_two_week_maturity.is_some()
-        || !latest.live_cohorts.is_empty()
+    if latest != snapshot
         || latest.lifecycle != Lifecycle::Paused
         || latest.control_epoch != captured_control_epoch
-        || latest.config != snapshot.config
     {
         return Err(crate::api::ApiError::Busy);
     }
@@ -141,6 +130,8 @@ pub async fn readiness_preflight(
     latest.two_year_maturity_baseline_reconciled |= two_year_baseline_needed;
     latest.lifecycle = Lifecycle::Ready;
     state::write(latest);
+    #[cfg(target_family = "wasm")]
+    crate::recovery_timer::replace_for_state();
     Ok(())
 }
 
@@ -202,23 +193,6 @@ async fn begin_dynamic_bootstrap(snapshot: &state::NnsStateV1) -> Result<(), cra
     Ok(())
 }
 
-pub fn begin_control_request() -> Result<u64, String> {
-    let mut state = state::read();
-    state.control_epoch = state
-        .control_epoch
-        .checked_add(1)
-        .ok_or("control epoch overflow")?;
-    let epoch = state.control_epoch;
-    state::write(state);
-    Ok(epoch)
-}
-
-pub fn set_paused() {
-    let mut state = state::read();
-    state.lifecycle = Lifecycle::Paused;
-    state::write(state);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -230,6 +204,7 @@ mod tests {
                 staking_subaccount: [2; 32],
                 cached_stake_e8s: 100,
             },
+            controller: Some(candid::Principal::anonymous()),
             maturity_e8s: 0,
             staked_maturity_e8s: 0,
             auto_stake_maturity: false,
@@ -244,25 +219,46 @@ mod tests {
     #[test]
     fn complete_exact_baseline_is_required() {
         let valid = observation();
-        assert_eq!(validate_prelaunch_baseline("fixture", 100, &valid), Ok(()));
+        assert_eq!(
+            validate_prelaunch_baseline("fixture", 100, candid::Principal::anonymous(), &valid),
+            Ok(())
+        );
         let mut wrong_principal = valid.clone();
         wrong_principal.snapshot.cached_stake_e8s = 101;
         assert!(matches!(
-            validate_prelaunch_baseline("fixture", 100, &wrong_principal),
+            validate_prelaunch_baseline(
+                "fixture",
+                100,
+                candid::Principal::anonymous(),
+                &wrong_principal
+            ),
             Err(crate::api::ApiError::Invalid(_))
         ));
-        let mut ordinary = valid.clone();
-        ordinary.maturity_e8s = 1;
-        assert!(matches!(
-            validate_prelaunch_baseline("fixture", 100, &ordinary),
-            Err(crate::api::ApiError::Pending(message)) if message.contains("BaselineUnreconciled")
-        ));
+        for (ordinary, staked) in [(1, 0), (0, 1), (1, 1)] {
+            let mut mature = valid.clone();
+            mature.maturity_e8s = ordinary;
+            mature.staked_maturity_e8s = staked;
+            assert_eq!(
+                validate_prelaunch_baseline(
+                    "fixture",
+                    100,
+                    candid::Principal::anonymous(),
+                    &mature
+                ),
+                Ok(())
+            );
+        }
         let mut pending = valid;
         pending
             .maturity_disbursements
             .push(crate::execution::placeholder_maturity_disbursement());
         assert!(matches!(
-            validate_prelaunch_baseline("fixture", 100, &pending),
+            validate_prelaunch_baseline(
+                "fixture",
+                100,
+                candid::Principal::anonymous(),
+                &pending
+            ),
             Err(crate::api::ApiError::Pending(message)) if message.contains("BaselineUnreconciled")
         ));
     }
@@ -284,21 +280,42 @@ mod tests {
     }
 
     #[test]
-    fn staked_auto_stake_dissolving_and_wrong_delay_are_rejected() {
-        let mut staked = observation();
-        staked.staked_maturity_e8s = 1;
-        assert!(validate_prelaunch_baseline("fixture", 100, &staked).is_err());
+    fn wrong_controller_auto_stake_dissolving_and_wrong_delay_are_rejected() {
         let mut auto = observation();
         auto.auto_stake_maturity = true;
-        assert!(validate_prelaunch_baseline("fixture", 100, &auto).is_err());
+        assert!(
+            validate_prelaunch_baseline("fixture", 100, candid::Principal::anonymous(), &auto)
+                .is_err()
+        );
         let mut dissolving = observation();
         dissolving.dissolve_state =
             Some(crate::execution::DissolveState::WhenDissolvedTimestampSeconds(u64::MAX));
-        assert!(validate_prelaunch_baseline("fixture", 100, &dissolving).is_err());
+        assert!(validate_prelaunch_baseline(
+            "fixture",
+            100,
+            candid::Principal::anonymous(),
+            &dissolving
+        )
+        .is_err());
         let mut wrong_delay = observation();
         wrong_delay.dissolve_state = Some(crate::execution::DissolveState::DissolveDelaySeconds(
             crate::execution::APPROVED_PERMANENT_DISSOLVE_DELAY_SECONDS - 1,
         ));
-        assert!(validate_prelaunch_baseline("fixture", 100, &wrong_delay).is_err());
+        assert!(validate_prelaunch_baseline(
+            "fixture",
+            100,
+            candid::Principal::anonymous(),
+            &wrong_delay
+        )
+        .is_err());
+        let mut wrong_controller = observation();
+        wrong_controller.controller = Some(candid::Principal::from_slice(&[1]));
+        assert!(validate_prelaunch_baseline(
+            "fixture",
+            100,
+            candid::Principal::anonymous(),
+            &wrong_controller
+        )
+        .is_err());
     }
 }

@@ -136,6 +136,20 @@ every representative transition.
 Every normal Ready state with claim-bearing supply `C > 0` satisfies `B >= C`
 (ICP and IO both use e8 precision). Empty genesis has `B = C = 0`.
 
+An unusually delayed launch can transiently observe `B > 0, C = 0` if weekly
+permanent-neuron maturity realizes before any claim-bearing IO exists. Whenever
+`C = 0`, the first supply-paired receipt issues one IO per unit of that
+receipt's new net claim-backing credit, regardless of the existing `B`; it does
+not issue IO against the pre-existing backing itself. For example, `B = 5`,
+`C = 0`, and a new net credit of 10 issue 10 IO and leave `B = 15`, `C = 10`,
+so the prior 5 benefits the first claim-bearing supply as surplus backing. The
+structural target is zero while both `C = 0` and active claim backing is zero;
+nonzero active claim backing with zero claims remains invalid. Claim-rate
+reporting continues to identify `B > 0, C = 0` as backing without claims, and
+redemption remains unavailable until `C > 0`. This rule adds no Stream↔NNS
+scheduling protocol; the weekly trigger and existing delayed maturity state
+machine otherwise proceed normally.
+
 ### B. Claim-rate monotonicity
 
 For consecutive canonical checkpoints:
