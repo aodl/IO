@@ -1,0 +1,55 @@
+{
+  "schema": "io.acceptance.blockers.v1",
+  "classification": "DRAFT",
+  "additional_observed_or_derived_sealing_inputs": [
+    "canonical Jupiter SNS voting-duration and action-criticality parameters for a deadline feasibility comparison with IO",
+    "complete canonical permanent-neuron observation and staking subaccount",
+    "acceptance Jupiter activation block floor",
+    "current-source IO artifact hashes",
+    "canonical observation of successful sale finalization and actual accepted participation",
+    "post-reserve-migration Ledger supply, Stream reserve, and exclusion balances",
+    "post-capitalization Stream backing and permanent-neuron refresh observations",
+    "read-only status/controller/cycles/module-hash observations for all nine acceptance canisters",
+    "Jupiter SNS Rewards implementation that can permanently reduce the IO neuron permissions to the reviewed voting-only set and cast authenticated IO votes from the actual acceptance canister",
+    "production SNS Governance principal before the full production Jupiter staking Account can be sealed (does not block acceptance)"
+  ],
+  "unfinished_io_tooling": [],
+  "capitalization_rule": "After successful sale finalization, derive C0 canonically, fund B0=C0, and top up the verified permanent neuron by ceil(2*C0/3) e8s while reporting sub-e8 rounding.",
+  "sale_proceeds_policy": "SNS ICP treasury proceeds remain outside IO backing and permanent capital.",
+  "jupiter_governance_dependency": "The IO package derives and excludes the neuron, but governance acceptance remains blocked until the Jupiter repository implements upgrade-safe proposal mapping and voting plus the reviewed permission-removal/custody action.",
+  "missing_human_inputs": [
+    "FINAL_SNS_SALE_COMMIT",
+    "FINAL_SNS_SALE_ARTIFACT_HASHES",
+    "FINAL_TOKEN_NAME",
+    "FINAL_TOKEN_SYMBOL",
+    "ACCEPTANCE_SALE_IO_ALLOCATION_E8S",
+    "ACCEPTANCE_MINIMUM_PARTICIPANT_ICP_E8S",
+    "ACCEPTANCE_SALE_START_TIME_AND_DURATION",
+    "GENESIS_CONTROLLER_PRINCIPAL",
+    "ACCEPTANCE_JUPITER_SNS_REWARDS_CANISTER_ID",
+    "ACCEPTANCE_JUPITER_SOURCE_PRINCIPAL",
+    "ACCEPTANCE_PERMANENT_CANONICAL_CACHED_STAKE",
+    "PROPOSAL_URL",
+    "PROJECT_URL"
+  ],
+  "external_jupiter_work": [
+    "The IO package derives and excludes the neuron, but governance acceptance remains blocked until the Jupiter repository implements upgrade-safe proposal mapping and voting plus the reviewed permission-removal/custody action."
+  ],
+  "proven_framework_authority_constraints": [],
+  "source_findings_requiring_live_proof": [],
+  "local_build_constraints": [],
+  "completed_independent_tests": [
+    "Pinned parser/pre-execution/builder accepted generated local 3 IO / 3 ICP configuration; parsed acceptance/production economics match; five mutations rejected. Deployment parameters remain unapproved.",
+    "Real PocketIC 14 NNS existing-ID non-controller refresh succeeded and preserved controller/configuration; three valid Configure operations returned NotAuthorized.",
+    "All six clean pinned-source SNS Wasms built; same-source bundle assembly and raw/compressed byte validation passed. Exact-bundle capability-bearing contract profile passed, including real Governance.",
+    "Real self-deployed same-source sale and reserve migration passed checkpoints A/B: all sweep/recipe/claim calls successful, Fund-disabled result zero, actual Governance Normal and Root success, C0=3299980000 e8s, Delta K=2199986667 e8s. Empty initial dapp list does not prove IO installation.",
+    "Real A/B single-mutation rejection suite passed in 174.68 seconds, including unknown modes and extra arguments.",
+    "Real 30 IO / 10 IO proposer-fee lifecycle passed in 70.77 seconds; canonical max-neuron bound updated to 1000 by standard adopted proposal.",
+    "Real Jupiter caller canister hardening passed in 69.10 seconds: exact sole Vote permission, successful vote, authorization failures for valid restricted operations.",
+    "acceptance_sale_real passed the full initially-registered Root install A/B/C launch in 117.86 seconds, including canonical Dynamic reconciliation, daily entitlement and exact 0.49990303 ICP redemption payout for 0.5 IO.",
+    "Extracted real checkpoint C mutation test passed in 178.65 seconds.",
+    "Offline deployment-context and existing permanent-neuron support implemented; 21 acceptance component tests passed. Mainnet observations are not claimed.",
+    "Canonical test_ci passed after the final launch and configuration repairs.",
+    "The current-source candidate reward-share integration passed serially against the pinned Governance candidate."
+  ]
+}

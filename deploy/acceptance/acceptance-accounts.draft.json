@@ -1,0 +1,295 @@
+{
+  "accounts": [
+    {
+      "asset": "IO",
+      "excluded_from_claim_supply": false,
+      "icp_account_identifier": null,
+      "icrc_account": {
+        "owner": "h7y7s-kyaaa-aaaas-amxrq-cai",
+        "subaccount_hex": "TBD_DERIVED_AFTER_GENESIS_CONTROLLER_MEMO_5282519294002868273"
+      },
+      "initial_expected_balance_e8s": 3000000000,
+      "name": "sns_governance_neuron_stake",
+      "owner": "h7y7s-kyaaa-aaaas-amxrq-cai",
+      "role": "initial claim-bearing governance neuron",
+      "steady_state_classification": "claim-bearing while staked",
+      "subaccount_hex": "TBD_DERIVED_AFTER_GENESIS_CONTROLLER_MEMO_5282519294002868273",
+      "user_funding_required": false
+    },
+    {
+      "asset": "IO",
+      "excluded_from_claim_supply": true,
+      "icp_account_identifier": null,
+      "icrc_account": {
+        "owner": "h7y7s-kyaaa-aaaas-amxrq-cai",
+        "subaccount_hex": "TBD_DERIVED_AFTER_GENESIS_CONTROLLER_MEMO_5282531345630769201"
+      },
+      "initial_expected_balance_e8s": 89999996700000000,
+      "name": "sns_reserve_transport_neuron_stake",
+      "owner": "h7y7s-kyaaa-aaaas-amxrq-cai",
+      "role": "excluded one-time reserve transport",
+      "steady_state_classification": "permanently excluded; normally zero after migration",
+      "subaccount_hex": "TBD_DERIVED_AFTER_GENESIS_CONTROLLER_MEMO_5282531345630769201",
+      "user_funding_required": false
+    },
+    {
+      "asset": "IO",
+      "excluded_from_claim_supply": true,
+      "icp_account_identifier": null,
+      "icrc_account": {
+        "owner": "h7y7s-kyaaa-aaaas-amxrq-cai",
+        "subaccount_hex": "TBD_DERIVED_AFTER_JUPITER_SNS_REWARDS_MEMO_5282522618206892081"
+      },
+      "initial_expected_balance_e8s": 10000000000000000,
+      "name": "sns_jupiter_governance_neuron_stake",
+      "owner": "h7y7s-kyaaa-aaaas-amxrq-cai",
+      "role": "excluded Jupiter governance-only neuron",
+      "steady_state_classification": "permanently staked and economically excluded",
+      "subaccount_hex": "TBD_DERIVED_AFTER_JUPITER_SNS_REWARDS_MEMO_5282522618206892081",
+      "user_funding_required": false
+    },
+    {
+      "asset": "IO",
+      "excluded_from_claim_supply": false,
+      "icp_account_identifier": null,
+      "icrc_account": {
+        "owner": "h7y7s-kyaaa-aaaas-amxrq-cai",
+        "subaccount_hex": "12d56c502e7f5024f66d83c05c33e825521c88f970cf8e28d3af27c7045e3f17"
+      },
+      "initial_expected_balance_e8s": 0,
+      "name": "sns_treasury",
+      "owner": "h7y7s-kyaaa-aaaas-amxrq-cai",
+      "role": "zero treasury allocation",
+      "steady_state_classification": "zero",
+      "subaccount_hex": "12d56c502e7f5024f66d83c05c33e825521c88f970cf8e28d3af27c7045e3f17",
+      "user_funding_required": false
+    },
+    {
+      "asset": "IO",
+      "excluded_from_claim_supply": false,
+      "icp_account_identifier": null,
+      "icrc_account": {
+        "owner": "hd4fd-5yaaa-aaaas-amxtq-cai",
+        "subaccount_hex": null
+      },
+      "initial_expected_balance_e8s": 300000000,
+      "name": "sns_swap",
+      "owner": "hd4fd-5yaaa-aaaas-amxtq-cai",
+      "role": "small sale allocation pending distribution",
+      "steady_state_classification": "zero after successful finalization except canonically observed residual dust",
+      "subaccount_hex": null,
+      "user_funding_required": false
+    },
+    {
+      "asset": "ICP",
+      "excluded_from_claim_supply": false,
+      "icp_account_identifier": "859ff35c109f024843cd270d146ad984189e4fe492349fa818a095189e15824a",
+      "icrc_account": {
+        "owner": "h7y7s-kyaaa-aaaas-amxrq-cai",
+        "subaccount_hex": null
+      },
+      "initial_expected_balance_e8s": 0,
+      "name": "sns_icp_treasury",
+      "owner": "h7y7s-kyaaa-aaaas-amxrq-cai",
+      "role": "sale proceeds retained by SNS Governance",
+      "steady_state_classification": "sale proceeds; excluded from IO claim backing and permanent capital",
+      "subaccount_hex": null,
+      "user_funding_required": false
+    },
+    {
+      "asset": "IO",
+      "excluded_from_claim_supply": false,
+      "icp_account_identifier": null,
+      "icrc_account": {
+        "owner": "h7y7s-kyaaa-aaaas-amxrq-cai",
+        "subaccount_hex": "b4ff72ac43934140098a9a00ce70f431eff991e329f5f9735b3468b0ccd1f2ed"
+      },
+      "initial_expected_balance_e8s": 0,
+      "name": "sns_future_swap",
+      "owner": "h7y7s-kyaaa-aaaas-amxrq-cai",
+      "role": "zero future swap allocation",
+      "steady_state_classification": "zero",
+      "subaccount_hex": "b4ff72ac43934140098a9a00ce70f431eff991e329f5f9735b3468b0ccd1f2ed",
+      "user_funding_required": false
+    },
+    {
+      "asset": "IO",
+      "excluded_from_claim_supply": false,
+      "icp_account_identifier": null,
+      "icrc_account": {
+        "owner": "h7y7s-kyaaa-aaaas-amxrq-cai",
+        "subaccount_hex": null
+      },
+      "initial_expected_balance_e8s": 0,
+      "name": "sns_ledger_minting",
+      "owner": "h7y7s-kyaaa-aaaas-amxrq-cai",
+      "role": "SNS Ledger minting account",
+      "steady_state_classification": "diagnostic authority account",
+      "subaccount_hex": null,
+      "user_funding_required": false
+    },
+    {
+      "asset": "IO",
+      "excluded_from_claim_supply": true,
+      "icp_account_identifier": null,
+      "icrc_account": {
+        "owner": "gjthz-7iaaa-aaaas-amxuq-cai",
+        "subaccount_hex": "781a5fc2d878692d1fa555359c190f96d61f85b392cf11b80f4666169d789027"
+      },
+      "initial_expected_balance_e8s": 0,
+      "name": "stream_io_reserve",
+      "owner": "gjthz-7iaaa-aaaas-amxuq-cai",
+      "role": "canonical protocol reserve",
+      "steady_state_classification": "reserve; excluded by core supply formula",
+      "subaccount_hex": "781a5fc2d878692d1fa555359c190f96d61f85b392cf11b80f4666169d789027",
+      "user_funding_required": false
+    },
+    {
+      "asset": "ICP",
+      "excluded_from_claim_supply": false,
+      "icp_account_identifier": "104871600196c2231e927e1db940290ad0fed08c2c6e593a9b73094a28c346cd",
+      "icrc_account": {
+        "owner": "gjthz-7iaaa-aaaas-amxuq-cai",
+        "subaccount_hex": "ccdbb6def992deafdfc3a890cc431818631d7b42f94df6b2b3e1270459be8a78"
+      },
+      "initial_expected_balance_e8s": 0,
+      "name": "stream_liquid_icp",
+      "owner": "gjthz-7iaaa-aaaas-amxuq-cai",
+      "role": "liquid claim backing",
+      "steady_state_classification": "claim backing",
+      "subaccount_hex": "ccdbb6def992deafdfc3a890cc431818631d7b42f94df6b2b3e1270459be8a78",
+      "user_funding_required": true
+    },
+    {
+      "asset": "IO",
+      "excluded_from_claim_supply": false,
+      "icp_account_identifier": null,
+      "icrc_account": {
+        "owner": "gjthz-7iaaa-aaaas-amxuq-cai",
+        "subaccount_hex": "a1c09f94673b8eeded2ce084800bf2a95bcbd3ea346b97b6c3772ca5630c5d87"
+      },
+      "initial_expected_balance_e8s": 0,
+      "name": "stream_redemption_staging",
+      "owner": "gjthz-7iaaa-aaaas-amxuq-cai",
+      "role": "redemption staging",
+      "steady_state_classification": "transient value-moving staging",
+      "subaccount_hex": "a1c09f94673b8eeded2ce084800bf2a95bcbd3ea346b97b6c3772ca5630c5d87",
+      "user_funding_required": false
+    },
+    {
+      "asset": "ICP",
+      "excluded_from_claim_supply": false,
+      "icp_account_identifier": "43c0056efa974174fb0eebfa3d229610a946bf62b5f6dccbc2803039ed4503d6",
+      "icrc_account": {
+        "owner": "gosbn-sqaaa-aaaas-amxua-cai",
+        "subaccount_hex": "daa2f749bb8f8998f94ee65e1871dc84444db38965123889f3cad6bc521ba5a1"
+      },
+      "initial_expected_balance_e8s": 0,
+      "name": "nns_two_year_maturity_staging",
+      "owner": "gosbn-sqaaa-aaaas-amxua-cai",
+      "role": "TwoYear maturity staging",
+      "steady_state_classification": "self-funded from gross maturity",
+      "subaccount_hex": "daa2f749bb8f8998f94ee65e1871dc84444db38965123889f3cad6bc521ba5a1",
+      "user_funding_required": false
+    },
+    {
+      "asset": "ICP",
+      "excluded_from_claim_supply": false,
+      "icp_account_identifier": "16788876b8295afcc092ba98ecfb5f4091da4086797091d03103e4386fb0bc7e",
+      "icrc_account": {
+        "owner": "gosbn-sqaaa-aaaas-amxua-cai",
+        "subaccount_hex": "f2a8f595dfb105f2c3134b466f6e8b5102752ba2505b0ee5cb7d7e3de1d57266"
+      },
+      "initial_expected_balance_e8s": 0,
+      "name": "nns_two_week_maturity_staging",
+      "owner": "gosbn-sqaaa-aaaas-amxua-cai",
+      "role": "TwoWeek maturity staging",
+      "steady_state_classification": "self-funded from gross maturity",
+      "subaccount_hex": "f2a8f595dfb105f2c3134b466f6e8b5102752ba2505b0ee5cb7d7e3de1d57266",
+      "user_funding_required": false
+    },
+    {
+      "asset": "ICP",
+      "excluded_from_claim_supply": false,
+      "icp_account_identifier": "23f97e98045b2376759598bdd5b49e538f1c19cfd96280437f7c72a2cb1b8362",
+      "icrc_account": {
+        "owner": "rrkah-fqaaa-aaaaa-aaaaq-cai",
+        "subaccount_hex": "07734f006ddcefc43f9ec1ebcdf0e053811ffd03bbf0b06df8df4a874e3e51d0"
+      },
+      "initial_expected_balance_e8s": 0,
+      "name": "nns_dynamic_parent_stake",
+      "owner": "rrkah-fqaaa-aaaaa-aaaaq-cai",
+      "role": "memo-0 Dynamic parent neuron",
+      "steady_state_classification": "10 ICP anchor plus claim backing",
+      "subaccount_hex": "07734f006ddcefc43f9ec1ebcdf0e053811ffd03bbf0b06df8df4a874e3e51d0",
+      "user_funding_required": true
+    },
+    {
+      "asset": "ICP",
+      "excluded_from_claim_supply": false,
+      "icp_account_identifier": "627fab1555b9489e47aee8d210b23a13c9da63b592f80b1602ecd4c245e1ef7b",
+      "icrc_account": {
+        "owner": "gosbn-sqaaa-aaaas-amxua-cai",
+        "subaccount_hex": null
+      },
+      "initial_expected_balance_e8s": 0,
+      "name": "nns_jupiter_staging",
+      "owner": "gosbn-sqaaa-aaaas-amxua-cai",
+      "role": "Jupiter staging",
+      "steady_state_classification": "self-funded from Jupiter receipt",
+      "subaccount_hex": null,
+      "user_funding_required": false
+    },
+    {
+      "asset": "ICP",
+      "excluded_from_claim_supply": false,
+      "icp_account_identifier": "TBD_DERIVED_AFTER_ACCEPTANCE_JUPITER_PRINCIPAL",
+      "icrc_account": {
+        "owner": "TBD_ACCEPTANCE_JUPITER_PRINCIPAL",
+        "subaccount_hex": null
+      },
+      "initial_expected_balance_e8s": null,
+      "name": "jupiter_source_icp",
+      "owner": "TBD_ACCEPTANCE_JUPITER_PRINCIPAL",
+      "role": "acceptance Jupiter/source default Account",
+      "steady_state_classification": "external deterministic source",
+      "subaccount_hex": null,
+      "user_funding_required": true
+    },
+    {
+      "asset": "IO",
+      "excluded_from_claim_supply": false,
+      "icp_account_identifier": null,
+      "icrc_account": {
+        "owner": "TBD_ACCEPTANCE_JUPITER_PRINCIPAL",
+        "subaccount_hex": null
+      },
+      "initial_expected_balance_e8s": null,
+      "name": "jupiter_source_io",
+      "owner": "TBD_ACCEPTANCE_JUPITER_PRINCIPAL",
+      "role": "acceptance Jupiter/source default Account",
+      "steady_state_classification": "external deterministic source",
+      "subaccount_hex": null,
+      "user_funding_required": true
+    },
+    {
+      "asset": "ICP",
+      "excluded_from_claim_supply": false,
+      "icp_account_identifier": "TBD_DERIVED_AFTER_PERMANENT_NEURON_OBSERVATION",
+      "icrc_account": {
+        "owner": "rrkah-fqaaa-aaaaa-aaaaq-cai",
+        "subaccount_hex": "TBD_ACCEPTANCE_PERMANENT_STAKING_SUBACCOUNT_HEX"
+      },
+      "initial_expected_balance_e8s": "TBD_VERIFIED_PERMANENT_CACHED_STAKE_BEFORE_TOP_UP_E8S",
+      "name": "nns_permanent_neuron_stake",
+      "owner": "rrkah-fqaaa-aaaaa-aaaaq-cai",
+      "role": "acceptance permanent two-year NNS neuron",
+      "steady_state_classification": "existing principal plus operator-funded delta K; maturity remains separate",
+      "subaccount_hex": "TBD_ACCEPTANCE_PERMANENT_STAKING_SUBACCOUNT_HEX",
+      "user_funding_required": false
+    }
+  ],
+  "derivation_authority": "io_accounts + io_ledger_types + SNS/NNS domain-separated SHA-256",
+  "environment": "acceptance",
+  "schema": "io.acceptance.accounts.v1"
+}

@@ -1,0 +1,74 @@
+# Generated from canonical-sns-economics.json + production-identity-overlay.json.
+name: "TBD_FINAL_TOKEN_NAME"
+description: IO protocol (production) small-sale launch
+NnsProposal:
+  title: IO small-sale production launch
+  url: "TBD_PROPOSAL_URL"
+  summary: IO small-sale governance and protocol production launch.
+logo: "TBD_SNS_LOGO_PATH"
+url: "TBD_PROJECT_URL"
+fallback_controller_principals:
+  - TBD_PRODUCTION_FALLBACK_CONTROLLER_PRINCIPAL
+dapp_canisters:
+  - "torpp-zyaaa-aaaar-qb7xq-cai"
+  - "tjqj3-uaaaa-aaaar-qb7xa-cai"
+  - "oae4c-3iaaa-aaaar-qb5qq-cai"
+  - "thset-pqaaa-aaaar-qb7wa-cai"
+Token:
+  name: "TBD_FINAL_TOKEN_NAME"
+  symbol: "TBD_FINAL_TOKEN_SYMBOL"
+  transaction_fee: 10000 e8s
+  logo: "TBD_SNS_LOGO_PATH"
+Proposals:
+  rejection_fee: 1000000000 e8s
+  initial_voting_period: 86400 seconds
+  maximum_wait_for_quiet_deadline_extension: 43200 seconds
+Neurons:
+  minimum_creation_stake: 100000000 e8s
+Voting:
+  minimum_dissolve_delay: 1209599 seconds
+  MaximumVotingPowerBonuses:
+    DissolveDelay:
+      duration: 1296060 seconds
+      bonus: 0%
+    Age:
+      duration: 0 seconds
+      bonus: 0%
+  RewardRate:
+    initial: 0%
+    final: 0%
+    transition_duration: 0 seconds
+Distribution:
+  Neurons:
+    - principal: TBD_GENESIS_CONTROLLER_PRINCIPAL
+      dissolve_delay: 1296060 seconds
+      memo: 5282519294002868273
+      stake: 3000000000 e8s
+      vesting_period: 0 seconds
+    - principal: alk7f-5aaaa-aaaar-qb4ra-cai
+      dissolve_delay: 1296060 seconds
+      memo: 5282522618206892081
+      stake: 10000000000000000 e8s
+      vesting_period: 0 seconds
+    - principal: TBD_GENESIS_CONTROLLER_PRINCIPAL
+      dissolve_delay: 0 seconds
+      memo: 5282531345630769201
+      stake: 89999996700000000 e8s
+      vesting_period: 0 seconds
+  InitialBalances:
+    treasury: 0 e8s
+    swap: 300000000 e8s
+  total: 100000000000000000 e8s
+Swap:
+  minimum_participants: 1
+  minimum_direct_participation_icp: 300000000 e8s
+  maximum_direct_participation_icp: 300000000 e8s
+  minimum_participant_icp: 300000000 e8s
+  maximum_participant_icp: 300000000 e8s
+  start_time: 12:00 UTC
+  duration: 86400 seconds
+  neurons_fund_participation: false
+  VestingSchedule:
+    events: 2
+    interval: 86400 seconds
+  confirmation_text: IO production sale at a gross reference price of 1 ICP per IO.

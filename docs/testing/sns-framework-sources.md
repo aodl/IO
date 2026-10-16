@@ -12,7 +12,7 @@ contacts an IC mainnet endpoint.
 | --- | --- | --- |
 | `--source` | `IO_SNS_SOURCE` | `official`, `local`, `bundle`; default `official` |
 | `--ic-repo` | `IO_IC_REPO` | local IC checkout; default `<IO>/../ic` |
-| `--scope` | `IO_SNS_SCOPE` | `governance`, `governance-root` |
+| `--scope` | `IO_SNS_SCOPE` | `governance`, `governance-root`, `same-source` |
 | `--profile` | `IO_SNS_PROFILE` | `contract`, `io`, `upgrade`, `lifecycle`; default `contract` |
 | `--bundle` | `IO_SNS_BUNDLE` | absolute bundle path for bundle mode |
 | `--cache-dir` | `IO_SNS_CACHE_DIR` | external content-addressed cache root |
@@ -80,6 +80,12 @@ The candidate Governance Wasm and DID replace Governance in the official base.
 The `governance-root` scope also replaces Root and hash-binds its DID; all other
 artifacts remain byte-for-byte official. A requested local component build is
 never silently replaced with its official baseline.
+
+The `same-source` scope requires a clean checkout and builds all six SNS
+components (Governance, Root, Ledger, Index, Swap and Archive), binding their
+DIDs in the bundle. Non-SNS system fixtures still use the official baseline.
+This build scope is not itself evidence of a successful self-deployed sale;
+the acceptance real-sale driver must separately prove that lifecycle.
 
 The runner records the IC commit, branch, merge base, clean/dirty state, tracked
 diff SHA-256, Bazel version, exact target, candidate DID hash, artifact hashes,

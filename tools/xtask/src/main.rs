@@ -17,6 +17,7 @@ use std::process::{Command, ExitCode};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
+mod acceptance;
 mod production_wiring;
 mod sns_framework;
 mod stable_schema;
@@ -8778,7 +8779,7 @@ fn run_security_scan(required: bool) -> bool {
 }
 
 fn print_known_commands() {
-    eprintln!("known: test_all, test_ci, verify_release, simplicity_check, validate_workflows, validate_obsolete_economics_guard, validate_nns_boundary_pin, security_scan, security_scan_required, validate_install_args, validate_production_wiring, validate_historian_freshness, validate_stable_storage, validate_local_sns_rehearsal, validate_local_sns_ledger, validate_local_sns_evidence_package, validate_local_sns_committed_evidence, validate_local_sns_scripts, e2e_coverage_matrix_check, live_stream_manager_pocketic_gate_check, real_canister_harness_check, real_canister_artifact_manifest_check, verify_real_canister_artifacts, fetch_real_canister_artifacts, real_sns_ledger_index_tests, real_sns_ledger_index_required, real_sns_governance_tests, real_sns_governance_required, real_io_e2e_tests, real_io_e2e_required, e2e_real_coverage_check, local_sns_evidence_tests, sns_apy_policy_tests, frontend_setup, frontend_build, frontend_unit, frontend_certified_asset_tests, frontend_required, frontend_all, historian_tests, historian_required, sns_harness_check, sns_config_validate, sns_config_validate_official, sns_launch_readiness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_root_lifecycle_tests, sns_root_lifecycle_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, build_recorded_source, verify_recorded_source, compare_release_artifact_dirs, nns_neuron_staking_subaccount, sns_distribution_subaccount, calculate_redemption_economics, index_transfer_block, verify_artifacts, verify_completed_release, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, historian_pocketic_integration, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
+    eprintln!("known: acceptance_checkpoint, acceptance_constructors, acceptance_local_config, acceptance_local_accounts, acceptance_preflight, acceptance_render, acceptance_capitalization, acceptance_preframework, acceptance_preframework_pocketic, acceptance_sale_real, test_all, test_ci, verify_release, simplicity_check, validate_workflows, validate_obsolete_economics_guard, validate_nns_boundary_pin, security_scan, security_scan_required, validate_install_args, validate_production_wiring, validate_historian_freshness, validate_stable_storage, validate_local_sns_rehearsal, validate_local_sns_ledger, validate_local_sns_evidence_package, validate_local_sns_committed_evidence, validate_local_sns_scripts, e2e_coverage_matrix_check, live_stream_manager_pocketic_gate_check, real_canister_harness_check, real_canister_artifact_manifest_check, verify_real_canister_artifacts, fetch_real_canister_artifacts, real_sns_ledger_index_tests, real_sns_ledger_index_required, real_sns_governance_tests, real_sns_governance_required, real_io_e2e_tests, real_io_e2e_required, e2e_real_coverage_check, local_sns_evidence_tests, sns_apy_policy_tests, frontend_setup, frontend_build, frontend_unit, frontend_certified_asset_tests, frontend_required, frontend_all, historian_tests, historian_required, sns_harness_check, sns_config_validate, sns_config_validate_official, sns_launch_readiness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_root_lifecycle_tests, sns_root_lifecycle_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, build_recorded_source, verify_recorded_source, compare_release_artifact_dirs, nns_neuron_staking_subaccount, sns_distribution_subaccount, calculate_redemption_economics, index_transfer_block, verify_artifacts, verify_completed_release, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, historian_pocketic_integration, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
 }
 
 fn main() -> ExitCode {
@@ -8791,9 +8792,130 @@ fn main() -> ExitCode {
     if cmd == "sns_framework" {
         return sns_framework::run(&args);
     }
+    if cmd.starts_with("acceptance_") {
+        if let Err(error) = acceptance::validate_cli(&cmd, &args) {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    }
     let root = PathBuf::from(".");
     let mut ok = true;
     match cmd.as_str() {
+        "acceptance_local_accounts" => {
+            let result = fs::read(&args[0]).map_err(|e| e.to_string()).and_then(|bytes| {
+                let context = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+                acceptance::checkpoints::accounts(&context)
+            }).and_then(|value| {
+                let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&args[1]).map_err(|e| e.to_string())?;
+                std::io::Write::write_all(&mut file, format!("{}\n", serde_json::to_string_pretty(&value).unwrap()).as_bytes()).map_err(|e| e.to_string())
+            });
+            if let Err(error) = result { eprintln!("local accounts: {error}"); ok = false; }
+        }
+        "acceptance_constructors" => {
+            if let Err(error) = acceptance::checkpoints::generate_constructors(&root,Path::new(&args[0])) {
+                eprintln!("constructors: {error}"); ok = false;
+            }
+        }
+        "acceptance_checkpoint" => {
+            let result = match args[0].as_str() {
+                "A" => acceptance::checkpoints::checkpoint_a(&root, Path::new(&args[1])),
+                "B" => acceptance::checkpoints::checkpoint_b(&root, Path::new(&args[1])),
+                "C" => acceptance::checkpoints::checkpoint_c(&root, Path::new(&args[1])),
+                _ => unreachable!("CLI modes validated"),
+            };
+            match result { Ok(value) => println!("{}", serde_json::to_string_pretty(&value).unwrap()),
+                Err(error) => { eprintln!("checkpoint {}: {error}", args[0]); ok = false; } }
+        }
+        "acceptance_local_config" => {
+            if let Err(error) = acceptance::local_config(&root, Path::new(&args[0]), Path::new(&args[1])) {
+                eprintln!("local fixture configuration: {error}");
+                ok = false;
+            }
+        }
+        "acceptance_preflight" => {
+            let sealed = args.first().is_some_and(|value| value == "sealed");
+            let result = if sealed {
+                Err("the monolithic seal is retired; use acceptance_checkpoint A, B and C with the corresponding observed evidence directory".into())
+            } else {
+                acceptance::validate(&root, false)
+            };
+            match result {
+                Ok(()) => eprintln!("✓ acceptance package validates (draft)"),
+                Err(err) => {
+                    eprintln!("✗ acceptance preflight: {err}");
+                    ok = false;
+                }
+            }
+        }
+        "acceptance_render" => {
+            let target = args.first().map(String::as_str).unwrap_or("acceptance");
+            match acceptance::render(&root, target) {
+                Ok(text) => print!("{text}"),
+                Err(err) => {
+                    eprintln!("✗ acceptance render: {err}");
+                    ok = false;
+                }
+            }
+        }
+        "acceptance_capitalization" => match acceptance::capitalization(&root) {
+            Ok(text) => print!("{text}"),
+            Err(err) => {
+                eprintln!("✗ acceptance capitalization: {err}");
+                ok = false;
+            }
+        },
+        "acceptance_preframework" => match acceptance::preframework(&root) {
+            Ok(()) => {}
+            Err(err) => {
+                eprintln!("✗ acceptance preframework: {err}");
+                ok = false;
+            }
+        },
+        "acceptance_preframework_pocketic" => {
+            match acceptance::preframework(&root) {
+                Ok(()) => {}
+                Err(err) => {
+                    eprintln!("✗ acceptance preframework: {err}");
+                    ok = false;
+                }
+            }
+            if env::var_os("POCKET_IC_BIN").is_none() {
+                eprintln!("✗ acceptance preframework PocketIC requires POCKET_IC_BIN");
+                ok = false;
+            } else {
+                ok &= run(
+                    "acceptance: autonomous NNS Dynamic bootstrap/readiness",
+                    cargo_test(&[
+                        "-p",
+                        "io-nns-neuron-manager",
+                        "--test",
+                        "io_nns_governance_recovery_pocketic",
+                        "account_policy_zero_memo_rejects_permanent_collision_and_accepts_candidate_dust",
+                        "--",
+                        "--exact",
+                    ]),
+                );
+                ok &= run(
+                    "acceptance: autonomous Stream readiness and paired receipt",
+                    cargo_test(&[
+                        "-p",
+                        "io-stream-manager",
+                        "--test",
+                        "io_paired_receipt_recovery_pocketic",
+                        "malformed_receipt_prepare_replays_and_survives_same_schema_restart",
+                        "--",
+                        "--exact",
+                    ]),
+                );
+            }
+        }
+        "acceptance_sale_real" => match acceptance::real_framework_hook(&root) {
+            Ok(()) => {}
+            Err(err) => {
+                eprintln!("✗ acceptance sale real: {err}");
+                ok = false;
+            }
+        },
         "check" => {
             ok &= run(
                 "check: workspace all targets",
@@ -9914,6 +10036,8 @@ fn main() -> ExitCode {
             for sub in [
                 "fmt_check",
                 "check",
+                "acceptance_preflight",
+                "acceptance_preframework",
                 "validate_workflows",
                 "validate_obsolete_economics_guard",
                 "simplicity_check",

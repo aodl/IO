@@ -162,6 +162,7 @@ pub fn debug_fail_malformed_prepare_after_persist(enabled: bool) {
     receipt::debug_fail_malformed_prepare_after_persist(enabled);
 }
 
+#[cfg(any(target_family = "wasm", test))]
 ic_cdk::export_candid!();
 
 #[cfg(test)]

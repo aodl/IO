@@ -33,7 +33,19 @@ pub fn new_pic_with_icp_sns_features() -> PocketIc {
 }
 
 pub fn new_pic_with_nns_governance_features() -> PocketIc {
-    with_optional_server_url(PocketIcBuilder::new())
+    nns_governance_features(with_optional_server_url(PocketIcBuilder::new()))
+}
+
+pub fn new_pic_with_nns_governance_server(url: &str) -> PocketIc {
+    nns_governance_features(
+        PocketIcBuilder::new()
+            .with_max_request_time_ms(Some(900_000))
+            .with_server_url(url.parse().expect("owned PocketIC URL")),
+    )
+}
+
+fn nns_governance_features(builder: PocketIcBuilder) -> PocketIc {
+    builder
         .with_sns_subnet()
         .with_application_subnet()
         .with_icp_features(IcpFeatures {

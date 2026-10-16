@@ -73,7 +73,7 @@ pub struct ListedNervousSystemFunction {
     pub description: Option<String>,
 }
 
-#[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq, Default)]
 pub struct NervousSystemParameters {
     pub default_followees: Option<DefaultFollowees>,
     pub max_dissolve_delay_seconds: Option<u64>,
@@ -276,6 +276,8 @@ pub enum Command {
     RegisterVote(RegisterVote),
     SetFollowing(SetFollowing),
     AddNeuronPermissions(AddNeuronPermissions),
+    RemoveNeuronPermissions(RemoveNeuronPermissions),
+    Split(Split),
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
@@ -293,6 +295,17 @@ pub struct SetFollowing {
 pub struct AddNeuronPermissions {
     pub principal_id: Option<Principal>,
     pub permissions_to_add: Option<NeuronPermissionList>,
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
+pub struct RemoveNeuronPermissions {
+    pub principal_id: Option<Principal>,
+    pub permissions_to_remove: Option<NeuronPermissionList>,
+}
+#[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
+pub struct Split {
+    pub amount_e8s: u64,
+    pub memo: u64,
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
@@ -331,7 +344,14 @@ pub enum Action {
     AddGenericNervousSystemFunction(NervousSystemFunction),
     ExecuteGenericNervousSystemFunction(ExecuteGenericNervousSystemFunction),
     Motion(Motion),
+    ManageNervousSystemParameters(Box<NervousSystemParameters>),
+    RegisterDappCanisters(RegisterDappCanisters),
     UpgradeSnsControlledCanister(UpgradeSnsControlledCanister),
+}
+
+#[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
+pub struct RegisterDappCanisters {
+    pub canister_ids: Vec<Principal>,
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
@@ -439,6 +459,7 @@ pub enum CommandResponse {
     RegisterVote(EmptyRecord),
     SetFollowing(EmptyRecord),
     AddNeuronPermission(EmptyRecord),
+    RemoveNeuronPermission(EmptyRecord),
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
@@ -1635,7 +1656,7 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
             Principal::anonymous(),
             icrc::account(Principal::from_slice(&[72; 29]), None),
             vec![
-                (icrc::account(controller, None), 5_000_000_000),
+                (icrc::account(controller, None), 10_000_005_000_000_000),
                 (reserve.clone(), 20_000_000_000),
             ],
         ),
@@ -1714,7 +1735,7 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
         100_000_000_u64,
         200_000_000,
         300_000_000,
-        400_000_000,
+        10_000_000_000_000_000,
         500_000_000,
     ];
     let neuron_ids = stakes
@@ -2142,6 +2163,7 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
             4 => {
                 let proposal = make_motion(&fixture, &neuron_ids[0], "installed daily event 4");
                 register_vote(&fixture, &neuron_ids[1], proposal, 2);
+                register_vote(&fixture, &neuron_ids[3], proposal, 1);
                 (
                     1,
                     vec![(0_usize, stakes[0]), (1, stakes[1]), (2, stakes[2])],
@@ -2163,10 +2185,10 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
             }
             7 => {
                 let proposal = make_motion(&fixture, &neuron_ids[1], "installed daily event 7");
-                register_vote(&fixture, &neuron_ids[0], proposal, 2);
+                register_vote(&fixture, &neuron_ids[3], proposal, 2);
                 (
                     1,
-                    vec![(0, stakes[0]), (1, stakes[1]), (2, stakes[2])],
+                    vec![(1, stakes[1])],
                     RewardEventClassification::ProposalBearing,
                 )
             }
@@ -2191,7 +2213,8 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
                 )
             }
             11 => {
-                make_motion(&fixture, &neuron_ids[4], "installed daily event 11");
+                let proposal = make_motion(&fixture, &neuron_ids[4], "installed daily event 11");
+                register_vote(&fixture, &neuron_ids[3], proposal, 1);
                 (
                     1,
                     vec![(4, stakes[4])],
@@ -2207,10 +2230,12 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
                 )
             }
             13 => {
-                make_motion(&fixture, &neuron_ids[0], "installed daily event 13");
+                let proposal = make_motion(&fixture, &neuron_ids[2], "installed daily event 13");
+                register_vote(&fixture, &neuron_ids[4], proposal, 1);
+                register_vote(&fixture, &neuron_ids[3], proposal, 1);
                 (
                     1,
-                    vec![(0, stakes[0]), (2, stakes[2])],
+                    vec![(2, stakes[2]), (4, stakes[4])],
                     RewardEventClassification::ProposalBearing,
                 )
             }
@@ -2225,6 +2250,43 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
         allow_reward_observation_margin();
         assert_eq!(event.round, previous_round + 1);
         assert_eq!(event.rounds_since_last_distribution, Some(1));
+        if matches!(day, 6 | 9) {
+            let proposal_id = event
+                .settled_proposals
+                .first()
+                .expect("governance threshold event has one proposal")
+                .id;
+            let proposals: ListProposalsResponse = icrc::query_one(
+                &pic,
+                governance,
+                "list_proposals",
+                ListProposals {
+                    include_reward_status: vec![],
+                    before_proposal: None,
+                    limit: 100,
+                    exclude_type: vec![],
+                    include_status: vec![],
+                    include_topics: None,
+                },
+            );
+            let proposal = proposals
+                .proposals
+                .iter()
+                .find(|proposal| proposal.id.as_ref().is_some_and(|id| id.id == proposal_id))
+                .expect("settled proposal remains queryable");
+            assert!(proposal.decided_timestamp_seconds > 0);
+            if day == 6 {
+                assert_eq!(
+                    proposal.executed_timestamp_seconds, 0,
+                    "ordinary operator-scale voting cannot carry a proposal while Jupiter abstains"
+                );
+            } else {
+                assert!(
+                    proposal.executed_timestamp_seconds > 0,
+                    "the 100M Jupiter governance neuron must retain real candidate voting power"
+                );
+            }
+        }
         let observation: Result<RewardEventObservation, ApiError> = decode_one(
             &pic.update_call(
                 stream,
@@ -2241,8 +2303,30 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
                     .end_timestamp_seconds
                     .expect("proposal-bearing event has an end timestamp");
                 let listed = list_all_neurons_paged(&fixture, 2);
+                let excluded_id = excluded
+                    .subaccount
+                    .as_ref()
+                    .expect("excluded staking Account has its neuron ID");
+                if expected_weights.is_empty() {
+                    let participation = find_neuron(&listed, &neuron_ids[3])
+                        .latest_reward_event_participation
+                        .as_ref()
+                        .expect("excluded-only candidate participant has event shares");
+                    assert_eq!(
+                        participation.reward_event_end_timestamp_seconds,
+                        Some(event_end)
+                    );
+                    assert!(
+                        participation.exact_reward_shares().unwrap() > 0,
+                        "candidate SNS must retain the excluded neuron's real voting weight"
+                    );
+                }
                 let canonical_share_total = listed
                     .iter()
+                    .filter(|neuron| {
+                        neuron.id.as_ref().map(|id| id.id.as_slice())
+                            != Some(excluded_id.as_slice())
+                    })
                     .filter_map(|neuron| neuron.latest_reward_event_participation.as_ref())
                     .filter(|participation| {
                         participation.reward_event_end_timestamp_seconds == Some(event_end)
@@ -2259,7 +2343,7 @@ pub fn run_candidate_reward_shares_drive_io_rewards(
                         assert_eq!(
                             participation.reward_event_end_timestamp_seconds,
                             Some(event_end),
-                            "proposal-bearing expectation must use only the current event tag"
+                            "proposal-bearing expectation for day {day}, neuron index {index} must use only the current event tag"
                         );
                         (
                             neuron_ids[index].id.clone(),

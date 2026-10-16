@@ -6,13 +6,16 @@ adds one fixed `10^18` policy-credit opportunity to a bounded, non-overlapping
 per-neuron accumulator.
 
 For a proposal-bearing event, IO sums canonical current-event shares across all
-neurons, including excluded and ineligible neurons. An eligible neuron receives
+neurons except exact staking Accounts in Stream's explicit economic-exclusion
+list. Ordinary claim-bearing neurons that are currently reward-ineligible stay
+in the denominator. An eligible neuron receives
 only the normalized fraction represented by its canonical
 `latest_reward_event_participation.reward_shares` whose event timestamp exactly
 matches the current `RewardEvent`. Absent, stale or zero shares add no credit;
 a malformed current-event value fails closed. A day with zero canonical shares
 forfeits its whole policy opportunity; IO never substitutes a participation or
-maturity fallback.
+maturity fallback. Excluded-only participation remains proposal-bearing and
+zero-entitlement; it is not reclassified as a no-proposal event.
 
 For a no-proposal event, and only when `settled_proposals` is empty, every
 currently eligible neuron receives its canonical eligible stake as event
@@ -21,8 +24,9 @@ are ignored. This is one virtual unanimous proposal, not a rolling average. If
 there are no eligible neurons, the whole opportunity is forfeited.
 
 Eligibility remains an exact staking-product rule: positive stake,
-non-dissolving, and exactly 1,209,600 seconds of dissolve delay. Protocol and
-Jupiter neurons are excluded. The two-week duration is not an accounting epoch.
+non-dissolving, and exactly 1,296,060 seconds of dissolve delay. Protocol and
+Jupiter neurons are excluded. The Dynamic NNS neuron's separate two-week
+duration is not an SNS accounting epoch.
 
 When the pooled parent has sufficient ordinary maturity and no batch is
 pending, IO freezes the live accumulator into one immutable entitlement batch

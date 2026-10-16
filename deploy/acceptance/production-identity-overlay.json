@@ -1,0 +1,12 @@
+{
+  "schema": "io.sns.identity-overlay.v1",
+  "environment": "production",
+  "dapp_canisters": {
+    "stream_manager": "thset-pqaaa-aaaar-qb7wa-cai",
+    "nns_manager": "oae4c-3iaaa-aaaar-qb5qq-cai",
+    "historian": "tjqj3-uaaaa-aaaar-qb7xa-cai",
+    "frontend": "torpp-zyaaa-aaaar-qb7xq-cai"
+  },
+  "jupiter_sns_rewards_canister_id": "alk7f-5aaaa-aaaar-qb4ra-cai",
+  "fallback_controller_principal": "TBD_PRODUCTION_FALLBACK_CONTROLLER_PRINCIPAL"
+}

@@ -147,6 +147,7 @@ pub fn debug_jupiter_refresh_boundary_ready() -> bool {
     )
 }
 
+#[cfg(any(target_family = "wasm", test))]
 ic_cdk::export_candid!();
 
 #[cfg(test)]

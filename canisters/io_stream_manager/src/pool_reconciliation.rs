@@ -327,7 +327,7 @@ pub async fn resume(now: u64) -> Result<(), ApiError> {
                 result => result?,
             };
             if matches!(progress, PoolProgress::Completed { .. }) {
-                clear(operation)?;
+                clear(operation).await?;
             } else {
                 mark_nns_transfer_proved(operation)?;
             }
@@ -339,7 +339,7 @@ pub async fn resume(now: u64) -> Result<(), ApiError> {
                 result => result?,
             };
             if matches!(progress, PoolProgress::Completed { .. }) {
-                clear(operation)?;
+                clear(operation).await?;
             }
             Ok(())
         }
@@ -569,15 +569,8 @@ fn mark_nns_transfer_proved(operation: PoolTopUpOperation) -> Result<(), ApiErro
     persist(&operation, updated)
 }
 
-fn clear(operation: PoolTopUpOperation) -> Result<(), ApiError> {
-    let mut latest = state::read();
-    if !matches!(&latest.active_operation, Some(StreamOperation::PoolTopUp(active)) if **active == operation)
-    {
-        return Err(ApiError::Busy);
-    }
-    latest.active_operation = None;
-    state::write(latest);
-    Ok(())
+async fn clear(operation: PoolTopUpOperation) -> Result<(), ApiError> {
+    crate::rewards::finish_completed_top_up(&operation).await
 }
 
 fn active() -> Result<PoolTopUpOperation, ApiError> {

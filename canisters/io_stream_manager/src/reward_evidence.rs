@@ -117,16 +117,31 @@ fn eligible_destination(
         owner: governance,
         subaccount: Some(neuron.id.clone()),
     };
-    let nonredeemable =
-        nonredeemable_governance_io_accounts
-            .iter()
-            .try_fold(false, |matched, account| {
-                destination
-                    .effective_eq(account)
-                    .map(|same| matched || same)
-            });
-    nonredeemable
-        .map(|nonredeemable| (!nonredeemable).then_some(destination))
+    Ok(
+        (!is_economically_excluded(governance, nonredeemable_governance_io_accounts, neuron)?)
+            .then_some(destination),
+    )
+}
+
+fn is_economically_excluded(
+    governance: Principal,
+    nonredeemable_governance_io_accounts: &[Account],
+    neuron: &Neuron,
+) -> Result<bool, ApiError> {
+    if neuron.id.len() != 32 {
+        return Ok(false);
+    }
+    let destination = Account {
+        owner: governance,
+        subaccount: Some(neuron.id.clone()),
+    };
+    nonredeemable_governance_io_accounts
+        .iter()
+        .try_fold(false, |matched, account| {
+            destination
+                .effective_eq(account)
+                .map(|same| matched || same)
+        })
         .map_err(ApiError::Invalid)
 }
 
@@ -176,9 +191,11 @@ pub(crate) fn event_credits_for(
                 Some(_) | None => 0,
             }
         };
-        canonical_share_total = canonical_share_total
-            .checked_add(current_shares)
-            .ok_or_else(|| ApiError::Invalid("canonical reward-share total overflow".into()))?;
+        if !is_economically_excluded(governance, nonredeemable_governance_io_accounts, neuron)? {
+            canonical_share_total = canonical_share_total
+                .checked_add(current_shares)
+                .ok_or_else(|| ApiError::Invalid("canonical reward-share total overflow".into()))?;
+        }
         let Some(destination) =
             eligible_destination(governance, nonredeemable_governance_io_accounts, neuron)?
         else {
@@ -461,6 +478,86 @@ mod tests {
             weights[0].event_credit,
             io_reward_policy::DAILY_EVENT_CREDIT
         );
+    }
+
+    #[test]
+    fn excluded_jupiter_votes_do_not_dilute_ordinary_proposal_credits() {
+        let governance = principal(1);
+        let excluded = vec![Account {
+            owner: governance,
+            subaccount: Some(vec![2; 32]),
+        }];
+        for excluded_shares in [0, 100, 10_000_000_000] {
+            let neurons = vec![
+                neuron(
+                    1,
+                    100,
+                    io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
+                    Some((Some(20), Some(shares(100)))),
+                ),
+                neuron(
+                    2,
+                    10_000_000_000,
+                    io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
+                    Some((Some(20), Some(shares(excluded_shares)))),
+                ),
+            ];
+            let (classification, credits) =
+                event_credits(governance, &excluded, &event(2, 20, 1), &neurons).unwrap();
+            assert_eq!(classification, RewardEventClassification::ProposalBearing);
+            assert_eq!(credits.len(), 1);
+            assert_eq!(credits[0].sns_neuron_id, vec![1; 32]);
+            assert_eq!(
+                credits[0].event_credit,
+                io_reward_policy::DAILY_EVENT_CREDIT
+            );
+        }
+    }
+
+    #[test]
+    fn excluded_only_proposal_participation_is_zero_eligible_not_fallback() {
+        let governance = principal(1);
+        let excluded = vec![Account {
+            owner: governance,
+            subaccount: Some(vec![2; 32]),
+        }];
+        let neurons = vec![neuron(
+            2,
+            10_000_000_000,
+            io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
+            Some((Some(20), Some(shares(10_000_000_000)))),
+        )];
+        let (classification, credits) =
+            event_credits(governance, &excluded, &event(2, 20, 1), &neurons).unwrap();
+        assert_eq!(
+            classification,
+            RewardEventClassification::ZeroEligibleParticipation
+        );
+        assert!(credits.is_empty());
+    }
+
+    #[test]
+    fn ordinary_ineligible_neuron_shares_still_remain_in_proposal_denominator() {
+        let governance = principal(1);
+        let neurons = vec![
+            neuron(
+                1,
+                100,
+                io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
+                Some((Some(20), Some(shares(100)))),
+            ),
+            neuron(
+                2,
+                100,
+                io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS - 1,
+                Some((Some(20), Some(shares(300)))),
+            ),
+        ];
+        let (classification, credits) =
+            event_credits(governance, &[], &event(2, 20, 1), &neurons).unwrap();
+        assert_eq!(classification, RewardEventClassification::ProposalBearing);
+        assert_eq!(credits.len(), 1);
+        assert_eq!(credits[0].event_credit, daily_fraction(1, 4));
     }
 
     #[test]
@@ -773,7 +870,7 @@ mod tests {
     }
 
     #[test]
-    fn excluded_current_event_share_is_forfeited() {
+    fn excluded_current_event_share_has_zero_io_economic_weight() {
         let governance = principal(1);
         let nonredeemable = Account {
             owner: governance,
@@ -796,7 +893,10 @@ mod tests {
         let (_, weights) =
             event_credits(governance, &[nonredeemable], &event(1, 10, 1), &neurons).unwrap();
         assert_eq!(weights.len(), 1);
-        assert_eq!(weights[0].event_credit, daily_fraction(1, 2));
+        assert_eq!(
+            weights[0].event_credit,
+            io_reward_policy::DAILY_EVENT_CREDIT
+        );
         let allocation = io_reward_policy::allocate_rewards(
             1_000,
             io_reward_policy::DAILY_EVENT_CREDIT,
@@ -806,8 +906,8 @@ mod tests {
             )],
         )
         .unwrap();
-        assert_eq!(allocation.allocations[0].io_e8s, 500);
-        assert_eq!(allocation.forfeited_io_e8s, 500);
+        assert_eq!(allocation.allocations[0].io_e8s, 1_000);
+        assert_eq!(allocation.forfeited_io_e8s, 0);
         assert_eq!(allocation.rounding_dust_e8s, 0);
     }
 

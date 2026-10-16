@@ -1,0 +1,2 @@
+canister_init
+canister_post_upgrade

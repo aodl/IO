@@ -4,6 +4,7 @@
 //! real SNS framework canisters. Non-required tests skip when no local pinned
 //! artifacts are configured; required xtask gates fail in that case.
 
+pub mod acceptance_sale;
 pub mod artifacts;
 pub mod brief_blockers;
 pub mod framework;

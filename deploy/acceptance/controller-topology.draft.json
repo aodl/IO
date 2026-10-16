@@ -1,0 +1,53 @@
+{
+  "schema": "io.acceptance.controller-topology.v1",
+  "source_authority": "SNS-W install/finalize behavior at the final same-source sale revision",
+  "external_governance_roles": {
+    "acceptance_jupiter_sns_rewards": "TBD_ACCEPTANCE_JUPITER_SNS_REWARDS_CANISTER_ID",
+    "production_jupiter_sns_rewards": "alk7f-5aaaa-aaaar-qb4ra-cai",
+    "relationship": "controller and eventual Vote-only permission holder for the excluded Jupiter IO neuron; not an IO dapp canister and not controlled by IO SNS Root",
+    "distinct_from": [
+      "acceptance Jupiter/source principal",
+      "NNS Manager Jupiter inflow identity",
+      "Stream Jupiter IO recipient Account",
+      "Jupiter reward_sns_root_canister_id owner-index integration"
+    ]
+  },
+  "states": {
+    "current_empty_acceptance": {
+      "status": "TBD_MANUAL_READ_ONLY_OBSERVATION",
+      "required": "all nine frozen IDs exist, are empty, and have only the allowlisted reservation controllers"
+    },
+    "pre_sns_install": {
+      "operator_or_fallback": "TBD_GENESIS_CONTROLLER_PRINCIPAL",
+      "controls": [
+        "SNS Governance",
+        "SNS Root",
+        "SNS Ledger",
+        "SNS Index",
+        "SNS Swap",
+        "Stream Manager",
+        "NNS Manager",
+        "Historian",
+        "Frontend"
+      ]
+    },
+    "post_successful_sale_acceptance": {
+      "sns_governance": ["SNS Root"],
+      "sns_root": ["SNS Governance"],
+      "sns_ledger": ["SNS Root"],
+      "sns_index": ["SNS Root"],
+      "sns_swap": ["SNS Root"],
+      "stream_manager": ["SNS Root"],
+      "nns_manager": ["SNS Root"],
+      "historian": ["SNS Root"],
+      "frontend": ["SNS Root"],
+      "acceptance_fallback_exception": "optional only if explicitly sealed and proven compatible with the final framework; default target is ordinary SNS sole-controller handoff"
+    },
+    "eventual_production": {
+      "policy": "ordinary SNS sole-controller topology; no operator fallback",
+      "sns_governance": ["SNS Root"],
+      "sns_root": ["SNS Governance"],
+      "sns_ledger_index_swap_and_io_dapps": ["SNS Root"]
+    }
+  }
+}

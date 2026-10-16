@@ -16,6 +16,7 @@ thread_local! {
     static ROUTER: RefCell<Option<AssetRouter<'static>>> = const { RefCell::new(None) };
 }
 
+#[cfg_attr(target_family = "wasm", ic_cdk::query)]
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }

@@ -41,9 +41,13 @@ shares; IO does not retain proposal DTOs or reconstruct direct/followed voting.
 When no proposal settled, current eligible cached IO stake determines each neuron's
 fraction of the fixed daily credit. That fallback is selected only by an empty
 canonical `settled_proposals` list; zero proposal shares never trigger it. For
-a proposal-bearing event, current-event shares from excluded and ineligible
-neurons remain in the canonical denominator, so their fractions are forfeited
-rather than redistributed.
+a proposal-bearing event, current-event shares from ordinary claim-bearing but
+reward-ineligible neurons remain in the denominator, so those fractions are
+forfeited. Shares from an exact staking Account in Stream's explicit economic-
+exclusion list do not enter IO's denominator at all. This makes the dedicated
+Jupiter governance-only stake economically weightless without changing its SNS
+voting power. Excluded-only proposal participation remains proposal-bearing and
+zero-entitlement rather than activating the no-proposal fallback.
 
 SNS Governance's canonical dummy genesis event has round zero, a nonzero end
 timestamp, zero `rounds_since_last_distribution`, no settled proposals, and no

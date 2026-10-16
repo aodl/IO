@@ -68,6 +68,7 @@ impl Source {
 enum Scope {
     Governance,
     GovernanceRoot,
+    SameSource,
 }
 
 impl Scope {
@@ -75,8 +76,9 @@ impl Scope {
         match value {
             "governance" => Ok(Self::Governance),
             "governance-root" => Ok(Self::GovernanceRoot),
+            "same-source" => Ok(Self::SameSource),
             _ => Err(format!(
-                "unsupported SNS scope {value:?}; expected governance or governance-root"
+                "unsupported SNS scope {value:?}; expected governance, governance-root, or same-source"
             )),
         }
     }
@@ -85,6 +87,7 @@ impl Scope {
         match self {
             Self::Governance => "governance",
             Self::GovernanceRoot => "governance-root",
+            Self::SameSource => "same-source",
         }
     }
 }
@@ -192,7 +195,7 @@ SOURCE (flag overrides environment)
   --require-capability NAME      require latest_reward_event_participation
 
 BUILD AND TEST
-  --scope governance|governance-root
+  --scope governance|governance-root|same-source
                                  IO_SNS_SCOPE; same-source component overlay
   --profile contract|io|upgrade|lifecycle
                                  implemented profiles
@@ -210,7 +213,7 @@ EXAMPLES
   tools/scripts/test-sns-framework --source bundle --bundle /abs/bundle --profile upgrade
 
 Every mode resolves to one manifest and uses the existing real-canister loader.
-Local scope overlays Governance, or Governance and Root from the same IC commit,
+Local scope overlays Governance, Governance and Root, or all six SNS components from the same IC commit,
 onto the checked-in official baseline. The lifecycle profile is a thin adapter
 to the guarded official local rehearsal and requires its loopback runtime inputs.
 No command in this workflow contacts an IC mainnet endpoint."#
@@ -501,6 +504,9 @@ fn resolve_local_overlay(
     let cache = cache_root(options)?;
     let bazel_rc = prepare_local_bazelrc(&ic_root, &cache)?;
     let provenance = inspect_local_ic(&ic_root, &bazel_rc, options.bazel_version.as_deref())?;
+    if options.scope == Scope::SameSource && !provenance.clean {
+        return Err("same-source acceptance bundles require a clean IC source checkout".into());
+    }
     if options.reject_dirty && !provenance.clean {
         return Err(format!(
             "dirty IC checkout rejected; commit/stash outside this runner or omit --reject-dirty for local development (diff SHA-256 {})",
@@ -530,8 +536,25 @@ fn resolve_local_overlay(
     .map_err(|err| format!("failed to retain official Governance baseline: {err}"))?;
 
     let mut targets = vec![("sns_governance", GOVERNANCE_TARGET)];
-    if options.scope == Scope::GovernanceRoot {
+    if options.scope != Scope::Governance {
         targets.push(("sns_root", ROOT_TARGET));
+    }
+    if options.scope == Scope::SameSource {
+        targets.extend([
+            (
+                "sns_ledger",
+                "//rs/ledger_suite/icrc1/ledger:ledger_canister",
+            ),
+            (
+                "sns_index",
+                "//rs/ledger_suite/icrc1/index-ng:index_ng_canister",
+            ),
+            (
+                "sns_archive",
+                "//rs/ledger_suite/icrc1/archive:archive_canister",
+            ),
+            ("sns_swap", "//rs/sns/swap:sns-swap-canister"),
+        ]);
     }
     let outputs = build_local_targets(
         &ic_root,
@@ -596,7 +619,7 @@ fn resolve_local_overlay(
         "governance_did_sha256",
         sha256(did_text.as_bytes()),
     )?;
-    let root_did_hash = if options.scope == Scope::GovernanceRoot {
+    let root_did_hash = if options.scope != Scope::Governance {
         let root_did = fs::read_to_string(ic_root.join(ROOT_DID))
             .map_err(|err| format!("failed to read candidate Root DID: {err}"))?;
         fs::write(staging.join("root.did"), &root_did)
@@ -607,6 +630,23 @@ fn resolve_local_overlay(
     } else {
         None
     };
+    if options.scope == Scope::SameSource {
+        for (component, source) in [
+            ("ledger", "rs/ledger_suite/icrc1/ledger/ledger.did"),
+            ("index", "rs/ledger_suite/icrc1/index-ng/index-ng.did"),
+            ("archive", "rs/ledger_suite/icrc1/archive/archive.did"),
+            ("swap", "rs/sns/swap/canister/swap.did"),
+        ] {
+            let bytes = fs::read(ic_root.join(source)).map_err(|err| err.to_string())?;
+            fs::write(staging.join(format!("{component}.did")), &bytes)
+                .map_err(|err| err.to_string())?;
+            resolved.set_value(
+                "contract",
+                &format!("{component}_did_sha256"),
+                sha256(&bytes),
+            )?;
+        }
+    }
     resolved.set_value(
         "baseline",
         "sns_governance_wasm",
@@ -925,22 +965,9 @@ fn build_local_targets(
     targets: &[(&str, &str)],
 ) -> Result<BTreeMap<String, PathBuf>, String> {
     let bazel_jobs = positive_env_or_default("IO_SNS_BAZEL_JOBS", 2)?;
-    for (_, target) in targets {
-        let query = command_output(
-            bazel_command(ic_root, bazel_rc, bazel_version_override).args([
-                "cquery",
-                target,
-                "--output=files",
-            ]),
-        )?;
-        if query.lines().all(|line| !line.trim().ends_with(".wasm.gz")) {
-            return Err(format!(
-                "canonical target {target} did not resolve to a .wasm.gz output"
-            ));
-        }
-    }
     let status = bazel_command(ic_root, bazel_rc, bazel_version_override)
         .arg("build")
+        .arg("--action_env=PATH=/home/codexdev/.local/bin:/usr/bin:/bin")
         .arg(format!("--jobs={bazel_jobs}"))
         .args(targets.iter().map(|(_, target)| target))
         .status()
@@ -948,20 +975,29 @@ fn build_local_targets(
     if !status.success() {
         return Err(format!("local IC Bazel build failed with {status}"));
     }
+    // Resolve all labels in one analysis. In --batch mode each separate cquery
+    // re-analyzes the full IC graph; six components must still be bound by label.
+    // Select the top-level configuration: Ledger dependencies also expose Archive
+    // under transitioned configurations, which are not the requested build target.
+    let expression = format!(
+        "config(set({}), target)",
+        targets
+            .iter()
+            .map(|(_, target)| *target)
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    let query = command_output(
+        bazel_command(ic_root, bazel_rc, bazel_version_override).args([
+            "cquery",
+            &expression,
+            "--output=starlark",
+            "--starlark:expr=str(target.label) + \"\\t\" + \"\\t\".join([f.path for f in target.files.to_list()])",
+        ]),
+    )?;
     let mut outputs = BTreeMap::new();
     for (component, target) in targets {
-        let query = command_output(
-            bazel_command(ic_root, bazel_rc, bazel_version_override).args([
-                "cquery",
-                target,
-                "--output=files",
-            ]),
-        )?;
-        let relative = query
-            .lines()
-            .map(str::trim)
-            .find(|line| line.ends_with(".wasm.gz"))
-            .ok_or_else(|| format!("no .wasm.gz cquery output for {target}"))?;
+        let relative = unique_canister_cquery_path(&query, target)?;
         let path = ic_root.join(relative);
         if !path.is_file() {
             return Err(format!("Bazel output is missing: {}", path.display()));
@@ -969,6 +1005,34 @@ fn build_local_targets(
         outputs.insert((*component).to_string(), path);
     }
     Ok(outputs)
+}
+
+fn unique_canister_cquery_path<'a>(query: &'a str, target: &str) -> Result<&'a str, String> {
+    let paths = query
+        .lines()
+        .filter_map(|line| {
+            let (label, files) = line.split_once('\t')?;
+            canister_cquery_label_matches(label, target).then_some(files)
+        })
+        .flat_map(|files| files.split('\t'))
+        .filter(|file| file.ends_with(".wasm.gz"))
+        .collect::<BTreeSet<_>>();
+    let relative = paths
+        .first()
+        .ok_or_else(|| format!("no .wasm.gz cquery output for {target}"))?;
+    if paths.len() != 1 {
+        return Err(format!(
+            "ambiguous .wasm.gz cquery output for {target}: {paths:?}"
+        ));
+    }
+    Ok(relative)
+}
+
+fn canister_cquery_label_matches(label: &str, target: &str) -> bool {
+    // IC's rust_canister macro aliases NAME to NAME.wasm.gz. cquery exposes
+    // that resolved file label, with Bazel's canonical main-repository prefix.
+    let label = label.strip_prefix("@@").unwrap_or(label);
+    label == target || label == format!("{target}.wasm.gz")
 }
 
 fn prepare_local_bazelrc(ic_root: &Path, cache: &Path) -> Result<PathBuf, String> {
@@ -1877,7 +1941,7 @@ fn validate_official_lock(lock: &SnsManifest) -> Result<(), String> {
     }
 }
 
-fn validate_bundle(root: &Path) -> Result<(), String> {
+pub(crate) fn validate_bundle(root: &Path) -> Result<(), String> {
     if !root.is_dir() {
         return Err(format!("bundle is not a directory: {}", root.display()));
     }
@@ -1887,6 +1951,10 @@ fn validate_bundle(root: &Path) -> Result<(), String> {
         "manifest.toml",
         "provenance.toml",
         "root.did",
+        "ledger.did",
+        "index.did",
+        "archive.did",
+        "swap.did",
         "wasms",
     ]);
     for entry in fs::read_dir(root)
@@ -1937,6 +2005,14 @@ fn validate_bundle(root: &Path) -> Result<(), String> {
         verify_hash(&root.join("root.did"), expected)?;
     } else if root.join("root.did").is_file() {
         return Err("root.did is not hash-bound by the manifest".into());
+    }
+    for component in ["ledger", "index", "archive", "swap"] {
+        let path = root.join(format!("{component}.did"));
+        if let Some(expected) = manifest.value("contract", &format!("{component}_did_sha256")) {
+            verify_hash(&path, expected)?;
+        } else if path.is_file() {
+            return Err(format!("{component}.did is not hash-bound by the manifest"));
+        }
     }
     if manifest.value("variant", "ic_repository").is_some()
         || manifest.value("variant", "ic_remotes").is_some()
@@ -2387,6 +2463,34 @@ fn safe_id(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn canister_cquery_alias_keeps_component_binding() {
+        let target = "//rs/sns/governance:sns-governance-canister";
+        assert!(super::canister_cquery_label_matches(target, target));
+        assert!(super::canister_cquery_label_matches(
+            "@@//rs/sns/governance:sns-governance-canister.wasm.gz",
+            target
+        ));
+        assert!(!super::canister_cquery_label_matches(
+            "@@//rs/sns/root:sns-root-canister.wasm.gz",
+            target
+        ));
+        assert!(!super::canister_cquery_label_matches(
+            "@@other//rs/sns/governance:sns-governance-canister.wasm.gz",
+            target
+        ));
+    }
+    #[test]
+    fn cquery_repeated_artifact_is_unique_but_different_paths_fail() {
+        let target = "//rs/ledger_suite/icrc1/archive:archive_canister";
+        let line = format!("@@{target}.wasm.gz\tbazel-out/a/archive_canister.wasm.gz\n");
+        assert_eq!(
+            super::unique_canister_cquery_path(&format!("{line}{line}"), target).unwrap(),
+            "bazel-out/a/archive_canister.wasm.gz"
+        );
+        let other = format!("@@{target}.wasm.gz\tbazel-out/b/archive_canister.wasm.gz\n");
+        assert!(super::unique_canister_cquery_path(&format!("{line}{other}"), target).is_err());
+    }
     use super::*;
 
     #[test]
@@ -2406,6 +2510,7 @@ mod tests {
 
     #[test]
     fn only_implemented_scope_and_profiles_are_advertised() {
+        assert_eq!(Scope::parse("same-source").unwrap(), Scope::SameSource);
         assert!(Scope::parse("sns-suite").is_err());
         assert_eq!(
             Scope::parse("governance-root").unwrap(),

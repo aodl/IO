@@ -150,6 +150,14 @@ redemption remains unavailable until `C > 0`. This rule adds no Stream↔NNS
 scheduling protocol; the weekly trigger and existing delayed maturity state
 machine otherwise proceed normally.
 
+Genesis governance-only stake may be removed from `C` only by exact staking
+Account identity. For the dedicated 100M IO Jupiter neuron, that same explicit
+exclusion removes its stake from active backing, reward eligibility and reward
+denominators, so reallocating those tokens from the already excluded reserve
+does not change `C`, `B`, the Dynamic target, or launch capitalization. The
+exclusion is not transferable: moving that IO to any nonexcluded Account would
+create claim-bearing supply and is forbidden by the neuron custody contract.
+
 ### B. Claim-rate monotonicity
 
 For consecutive canonical checkpoints:
@@ -320,15 +328,16 @@ active NNS work or a child at `ready_at_seconds`. This coupling is superseded.
 ## Candidate structural cadences and cost
 
 The reviewed neuron population ceiling is 1,000 and SNS `list_neurons` pages
-100 records. With one excluded IO Account, one structural poll makes:
+100 records. With the reserve-transport and Jupiter governance-only Accounts
+explicitly excluded, one structural poll makes:
 
 ```text
 SNS Governance pages       = floor(neurons / 100) + 1
 IO balance queries         = neurons + 2 * (reserve + excluded Accounts)
-approximate total calls    = neurons + Governance pages + 17
+approximate total calls    = neurons + Governance pages + 19
 ```
 
-The constant 17 covers the Root summary, four before/after NNS claim-asset
+The constant 19 covers the Root summary, four before/after NNS claim-asset
 observations, and the remaining two-snapshot ledger facts. It is a source-level
 capacity estimate, not a measured cycles quotation. The per-neuron balance
 queries dominate cycles cost.

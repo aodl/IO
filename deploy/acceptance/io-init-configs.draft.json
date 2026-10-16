@@ -1,0 +1,64 @@
+{
+  "schema": "io.acceptance.io-init-configs.v1",
+  "deployable": false,
+  "nns_manager": {
+    "canister_self": "gosbn-sqaaa-aaaas-amxua-cai",
+    "sns_governance": "h7y7s-kyaaa-aaaas-amxrq-cai",
+    "stream_manager": "gjthz-7iaaa-aaaas-amxuq-cai",
+    "jupiter": "TBD_ACCEPTANCE_JUPITER_PRINCIPAL",
+    "icp_ledger": "ryjl3-tyaaa-aaaaa-aaaba-cai",
+    "nns_governance": "rrkah-fqaaa-aaaaa-aaaaq-cai",
+    "two_year_neuron_id": 4021054791166218,
+    "pooled_parent_memo": 0,
+    "pooled_parent_followee_id": 4021054791166218,
+    "jupiter_account": {"owner": "TBD_ACCEPTANCE_JUPITER_PRINCIPAL", "subaccount": null},
+    "jupiter_staging": {"owner": "gosbn-sqaaa-aaaas-amxua-cai", "subaccount": null},
+    "stream_liquid_account": {"owner": "gjthz-7iaaa-aaaas-amxuq-cai", "subaccount_hex": "ccdbb6def992deafdfc3a890cc431818631d7b42f94df6b2b3e1270459be8a78"},
+    "expected_io_fee_e8s": 10000,
+    "expected_icp_fee_e8s": 10000,
+    "jupiter_activation_block_floor": "TBD_ACCEPTANCE_JUPITER_ACTIVATION_BLOCK_FLOOR",
+    "audited_permanent_principal_e8s": "TBD_AUDITED_PERMANENT_PRINCIPAL_AFTER_TOP_UP_E8S",
+    "transfer_retry_delay_nanos": 1000000000,
+    "ledger_deduplication_window_nanos": 86400000000000
+  },
+  "stream_manager": {
+    "canister_self": "gjthz-7iaaa-aaaas-amxuq-cai",
+    "io_ledger": "hn6il-giaaa-aaaas-amxsq-cai",
+    "io_index": "he5dx-qaaaa-aaaas-amxta-cai",
+    "icp_ledger": "ryjl3-tyaaa-aaaaa-aaaba-cai",
+    "nns_manager": "gosbn-sqaaa-aaaas-amxua-cai",
+    "jupiter_io_account": {"owner": "TBD_ACCEPTANCE_JUPITER_PRINCIPAL", "subaccount": null},
+    "sns_governance": "h7y7s-kyaaa-aaaas-amxrq-cai",
+    "sns_root": "hk7o7-lqaaa-aaaas-amxsa-cai",
+    "expected_sns_governance_module_hash": "TBD_FINAL_SALE_GOVERNANCE_WASM_HASH",
+    "approved_reward_event_duration_seconds": 86400,
+    "io_reserve": {"owner": "gjthz-7iaaa-aaaas-amxuq-cai", "subaccount_hex": "781a5fc2d878692d1fa555359c190f96d61f85b392cf11b80f4666169d789027"},
+    "liquid_icp": {"owner": "gjthz-7iaaa-aaaas-amxuq-cai", "subaccount_hex": "ccdbb6def992deafdfc3a890cc431818631d7b42f94df6b2b3e1270459be8a78"},
+    "nonredeemable_governance_io_accounts": [
+      {"owner": "h7y7s-kyaaa-aaaas-amxrq-cai", "subaccount_hex": "TBD_DERIVED_AFTER_GENESIS_CONTROLLER_MEMO_5282531345630769201"},
+      {"owner": "h7y7s-kyaaa-aaaas-amxrq-cai", "subaccount_hex": "TBD_DERIVED_AFTER_JUPITER_SNS_REWARDS_MEMO_5282522618206892081"}
+    ],
+    "minimum_redemption_io_e8s": 20000,
+    "expected_io_fee_e8s": 10000,
+    "expected_icp_fee_e8s": 10000,
+    "redemption_poll_interval_seconds": 60,
+    "retry_delay_nanos": 1000000000,
+    "ledger_deduplication_window_nanos": 86400000000000
+  },
+  "historian": {
+    "sns_governance": "h7y7s-kyaaa-aaaas-amxrq-cai",
+    "sns_root": "hk7o7-lqaaa-aaaas-amxsa-cai",
+    "sns_ledger": "hn6il-giaaa-aaaas-amxsq-cai",
+    "sns_index": "he5dx-qaaaa-aaaas-amxta-cai",
+    "sns_swap": "hd4fd-5yaaa-aaaas-amxtq-cai",
+    "stream_manager": "gjthz-7iaaa-aaaas-amxuq-cai",
+    "nns_manager": "gosbn-sqaaa-aaaas-amxua-cai",
+    "expected_module_hashes": "TBD_FINAL_SAME_SOURCE_SNS_AND_CURRENT_SOURCE_IO_HASHES"
+  },
+  "frontend": {
+    "historian": "gaqmf-jaaaa-aaaas-amxva-cai",
+    "stream_manager": "gjthz-7iaaa-aaaas-amxuq-cai",
+    "nns_manager": "gosbn-sqaaa-aaaas-amxua-cai",
+    "sns_governance": "h7y7s-kyaaa-aaaas-amxrq-cai"
+  }
+}
