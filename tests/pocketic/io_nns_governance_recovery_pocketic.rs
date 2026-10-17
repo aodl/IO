@@ -48,7 +48,7 @@ fn recovery_server() -> &'static RecoveryServer {
         let _ = std::fs::remove_file(&port_file);
         let mut command = Command::new(binary);
         command
-            .args(["--ttl", "120", "--hard-ttl", "1800", "--port-file"])
+            .args(["--ttl", "120", "--hard-ttl", "7200", "--port-file"])
             .arg(&port_file);
         if std::env::var_os("POCKET_IC_MUTE_SERVER").is_some() {
             command.stdout(Stdio::null()).stderr(Stdio::null());
