@@ -176,3 +176,303 @@ The actual Jupiter canister's permanent hardening and mirrored voting remain an
 external integration milestone. All installs, funding, neuron operations and controller changes were confined
 to local PocketIC. No mainnet query or operation, staging, commit, push, reset,
 clean, stash or rebase was performed.
+
+## Corrective hardening — 2026-10-16
+
+The starting IO checkout was clean `temp` at
+`12438287435857991cdec8485d8df9c7bf7e7e90`, with parent
+`6e2c7c6a53a99bd78770053f42e3bbbe0db00a68`, equal to `origin/temp` (0 ahead,
+0 behind). There were no staged, unstaged or untracked files and no initial
+patch identity. The earlier observations above remain historical evidence.
+
+Checkpoint C accepts an initial Dynamic seed of at least 10 ICP; runtime
+bootstrap still records zero claim principal and exactly 10 ICP of anchor
+capacity. Physical excess is excluded surplus. The initial seed check is not
+applied to later fee-depleted anchor balances. Component cases cover
+999999999, 1000000000, 1000000001 and 6000000000 e8s. The real C mutation test
+also checks that accepted excess leaves the exact constructor bytes unchanged.
+
+The existing frontend pipeline has an isolated public-directory input. The
+acceptance wrapper explicitly supplies all six browser inputs, builds the
+browser before Rust, and preserves tracked assets. A shared offline check binds
+executable JSON configuration, the private manifest, content-addressed JS,
+HTML and embedded Wasm bytes. Local installed-asset checks compare HTTP bodies;
+the Governance/Root launch also checks the exact installed module hash and
+private-manifest 404. No schema or canister method is added or changed.
+
+`sns-source-baseline.json` is the single reviewed source-revision authority.
+Parser construction reads it; validators and the test driver compile it in.
+Untrusted evidence cannot authorize another revision by repeating its hash.
+The reviewed friendly-parser hash and all six mandatory DID hashes/capability
+checks are enforced. Every cached DID also matches its Git blob at the reviewed
+pin. The sibling IC checkout has unrelated work at another revision; it is
+untouched and rejected by parser construction. The verified cached rehearsal
+bundle/parser are reused; no new candidate source is fetched or selected.
+Final deployment-source approval remains unresolved.
+
+The complementary timer-only launch test retains the real sale and ordinary
+Governance/Root installation route. After installation/readiness, its window
+uses only PocketIC time advancement, ticks and status queries through TopUp,
+structural finalization and later reward entitlement. The keeper-assisted
+launch/redemption and recovery paths remain intact.
+
+The timer-only test reproduced a Ready Stream stuck with a prepared TopUp and
+an NNS Pool awaiting its transfer after two simulated hours. The existing reward
+callback retried observation, which returned Busy while that operation occupied
+the monetary slot. The narrow runtime correction resumes that exact durable
+TopUp in the same callback before observing another checkpoint, using the
+existing 60-second retry. No timer, cadence, stable field, worker or monetary
+rule is added. A separate earlier run lost its local PocketIC server during a
+long host pause in offline C validation, before reaching the timer window; its
+connection-refused failure is not timer evidence. The owned test server uses a
+3600-second idle TTL and 7200-second hard TTL, independently of simulated time.
+
+The full-neuron authorization extension passed against PocketIC 14's bootstrap
+NNS (compiler 1.93.1, release optimization 3, no IC commit in build metadata).
+The local operator controls a canister that controls the neuron: that operator
+cannot read the full neuron. The neuron controller and a separately configured
+local hotkey can read the complete typed record, and reads preserve that record.
+Existing-ID refresh remains permissionless and grants no read permission.
+Inspected NNS source also authorizes controllers/hotkeys of ManageNeuron
+followees. Public neuron summaries omit required private evidence. No production
+inspection endpoint or permission change is introduced. An existing authorized
+observer must supply both authentic typed replies before the manual preflight
+can proceed; real acceptance read permission is unknown.
+
+Validation results are recorded in the monitored command logs. Focused component
+tests passed (23 acceptance tests), browser unit tests passed (41), and the
+installed frontend HTTP test passed. The offline required security scan failed
+on nine advisories in the unchanged reference lockfile: `quinn-proto 0.11.15`
+requires at least `0.11.18`, and `rustls 0.23.40` requires at least `0.23.46` for
+the reported advisories. Dependency remediation is outside these five fixes;
+no ignore rule, lockfile change or claimed green security gate is included.
+
+The corrected timer-only case passed in 362.73 seconds against optimized
+current-source Stream Wasm
+`8f21bda82ea6f05654074d1ce6d0db53da91040786e787d12283e1437ed7d280`.
+Its local evidence is
+`target/acceptance-sale-1691477-1792172276395051405/timer-only.json`:
+generation 1 finalized at target/observed pooled backing `3000000000`, total
+claim backing stayed `3299980000`, and the canonical Dynamic staking balance
+was `3999990000` after one `10000` fee against the excluded anchor. With zero
+keeper calls, generation 2 and reward round 8 were then observed; the processed
+reward-event count increased from 0 to 1 and eligible policy credit from 0 to
+`1000000000000000000` (internal credit units, not issued IO).
+
+The exact installed frontend served `/` and
+`/generated/app.88098eefae09.js` successfully, with bytes matching its isolated
+build output and a 404 for the private manifest. Its configuration is network
+`ic`, demo `false`, and the four acceptance IDs in the runbook. SHA-256 values:
+
+- JS: `88098eefae0902f97ca7b4f40f6eca399106318a8877d8774f17ec3360c01c5f`.
+- HTML: `349a1973e391f8cd8f7387731cec3795b8a8822cdd24936b768b3d56bc450259`.
+- Installed frontend Wasm: `a0b4155ea37171baead8d104f464288f7ef6b8e51668fca4a37e33b76e8ca444`.
+
+The isolated output is
+`/home/codexdev/.cache/io/acceptance-hardening-WkhZEp0k/frontend-verified`.
+A separate build with inherited wrong IDs, local network and demo enabled
+produced byte-identical output because the wrapper supplies every explicit
+acceptance value. Tracked frontend assets were untouched by both builds. This
+evidence does not approve the final production browser build or replace the
+historical release artifacts above.
+
+The keeper-assisted `acceptance_sale_real` rerun passed in 282.89 seconds,
+including genuine sale finalization, A/B/C, the parameter proposal and four
+Governance/Root installations, entitlement and the exact 49990303 e8s redemption
+payout. The focused C mutation suite passed in 757.96 seconds. The expanded A/B
+negative suite passed in 840.32 seconds, rejecting altered Wasm, required DID,
+parser and source evidence. Its first attempt was deliberately interrupted
+before the default PocketIC server's hard TTL; that attempt is not validation.
+All Sale fixtures use the same owned server with sufficient host lifetime.
+
+The existing same-source bundle `contract` profile passed with required
+`latest_reward_event_participation`, including the real Governance case
+(67.06 seconds), ten reward-boundary tests and the additive DTO test. Source
+mode was `bundle`, scope `same-source`, reviewed IC commit
+`fcc281f7200a8d3192ec46c225b436b2096bbf58`, recorded clean tree/no tracked diff,
+official baseline `io-official-sns-baseline-2026-08-01`, and all six SNS
+components overridden together. The resolved manifest was
+`/home/codexdev/.cache/io/sns-framework/local-fcc281f7200a-clean-same-source-io-official-sns-baseline-2026-08-01-1c7b278cca608e13/manifest.toml`.
+The six raw/compressed hashes and Governance DID hash are the unchanged values
+in the historical source-built artifact table above, independently reverified
+by this profile and the checkpoint tests. This remains local rehearsal
+provenance, not final deployment-source approval.
+
+Broader validation exposed two directly related frontend harness assumptions.
+The existing source guard expected the default no-argument cleanup call; it
+checks the selected `generatedDir` and isolated-public input instead, and its
+exact retest passed. The certified-asset gate generated a new browser bundle
+but ran the package's live asset test against an older debug Wasm before its
+Rust rebuild. The strict served-byte assertion correctly rejected that mismatch.
+The existing gate steps are reordered to build embedded assets before both
+test invocations; no assertion, test or builder is removed. The complete
+reordered gate passed (explicit live test 55.58 seconds, twelve asset tests
+52.79 seconds, package live test 54.60 seconds). Interrupted aggregate attempts
+are not counted as completed validation. Production Wasms are unchanged by
+these test/tooling corrections.
+
+Byte-for-byte restoration of the starting browser outputs exposed the same
+ordering requirement at the root CI boundary: `test_unit` also executes the
+frontend PocketIC target, but preceded `frontend_required`. Its strict HTML
+comparison rejected cached `app.bdb872e86a0f.js` Wasm against restored
+`app.fefd0a864fc3.js` assets (42.87 seconds). Root CI runs the existing frontend
+gate first, with an ordering assertion in the existing source guard. No test
+is removed or relaxed. The exact guard and formatting checks passed; the
+canonical aggregate is rerun after this final tooling correction. Production
+IO Wasms and the acceptance-specific artifact evidence above are unchanged.
+
+### Final corrective validation — 2026-10-17
+
+The starting checkout was `temp` at
+`12438287435857991cdec8485d8df9c7bf7e7e90`, upstream `origin/temp`, ahead/behind
+0/0, with no staged, unstaged or untracked files and zero diff statistics.
+It matched the reviewed reference exactly; its parent was
+`6e2c7c6a53a99bd78770053f42e3bbbe0db00a68`. The reference commit's stable patch
+ID is `a0ec5bf6847bdfeb37be647cd5113025663c16f2`; there was no initial worktree
+patch. Pre-existing ignored frontend and debug outputs were preserved too.
+
+The final implementation patch SHA-256 (tracked code/build/test changes and
+reviewed source baseline, excluding explanatory docs and generated index) is
+`7df7dca6929ff4be029ee1a7575f5b0b99f90d8a29655ba030d78ac58015c40f`.
+The two new files are independently bound by SHA-256:
+
+- `tools/acceptance/build-frontend`:
+  `6aed51d00a7a5e5ac5ae975d150e038ad977118a70302c1a20cc978dd34d42b8`.
+- `tools/acceptance/frontend_assets.rs`:
+  `dc8b2ba8016a1c3119e57c57c4ae538e8c8ab38d619bd33609d28309bb34188f`.
+
+The final canonical aggregate completed with exit 1, not a green validation.
+Its log is
+`/home/codexdev/.codex-io/sns-framework/commands/20261016T214304Z-1950550.log`;
+the matching resource log and exact commands/patch checkpoints are retained
+under `/home/codexdev/.codex-io/sns-framework/`. Cargo/npm were offline, with
+two build jobs and serial muted PocketIC 14. Offline audit wrappers outside
+the repository disable advisory fetching, not any security checks.
+
+Passed in that final aggregate: formatting, workspace all-targets check,
+acceptance/static/interface/stable/simplicity gates, both recorded-source
+reproductions, frontend-before-unit ordering and HTTP byte checks, 161 xtask
+tests, 65 Stream unit tests, 46 NNS unit tests, the first complete 24-case
+Stream PocketIC target (2456.92 seconds), two NNS Manager cases (64.28 seconds),
+two Historian cases (36.31 seconds), SNS topology (55.82 seconds), both Root
+groups (117.47 and 116.43 seconds), and local CLI/API checks. Workspace frontend
+and Historian live tests also passed (69.84 and 115.14 seconds). The concluding
+Wasm check and strict all-targets/all-features clippy passed (56.52 seconds for
+clippy).
+
+Failures are retained, not converted into passes:
+
+- Required security scan: the nine unchanged-lockfile advisories listed above.
+- Repeated Stream target: 9 passed, 15 transport failures, 3189.19 seconds.
+  `first_payout_definitive_no_effect_defers_candidate_at_coarse_cadence` timed
+  out; subsequent cases received connection refused at `127.0.0.1:41273`.
+  The same target, including that case, passed in full earlier in this run.
+- Workspace NNS recovery: 1 passed, 28 transport failures, 1825.86 seconds.
+  The dust case timed out; subsequent cases received connection refused at
+  `127.0.0.1:45401`, near the target's existing 1800-second host server limit.
+  The earlier completed aggregate had passed that dust case and eighteen other
+  recovery cases against unchanged production code before its own later server
+  expiry. This is not a claim that the full workspace command passed.
+- A fresh exact payout-deferral retry lost its server with HTTP
+  `IncompleteMessage` at `127.0.0.1:41051`, before a monetary assertion
+  (506.17 seconds). Its log is `20261017T003130Z-2140620.log` in the command
+  directory above.
+
+The final isolated Dynamic dust/fee regression passed against current code in
+153.16 seconds:
+`cargo test --offline --locked -p io-nns-neuron-manager --test io_nns_governance_recovery_pocketic account_policy_zero_memo_rejects_permanent_collision_and_accepts_candidate_dust -- --exact --test-threads=1 --nocapture`.
+It proves zero initial claim credit, fixed 10 ICP anchor, excluded unsolicited
+surplus, fee-only anchor consumption and exact permit replay. Its monitored
+log is `20261017T004235Z-2144582.log`. This successful narrow rerun does not
+turn the failed aggregate into a pass.
+
+Resource heartbeats show sustained roughly 127–170 MiB available RAM and no
+swap before these losses; an OOM termination is not proven. No monetary
+assertion failed. No timer, monetary rule, assertion or dependency policy was
+weakened in response. Reliable aggregate execution and separately reviewed
+dependency remediation remain required; this source is not called CI-green
+or commit-ready.
+
+Focused acceptance commands used the verified bundle/parser/current optimized
+IO Wasms and isolated frontend directory specified above, with
+`POCKET_IC_BIN=/home/codexdev/.local/bin/pocket-ic-server`,
+`POCKET_IC_MUTE_SERVER=1`, `RUST_TEST_THREADS=1`, `CARGO_NET_OFFLINE=true` and
+`NPM_CONFIG_OFFLINE=true`. Exact command bodies were:
+
+```sh
+cargo test --offline --locked -p xtask acceptance:: -- --nocapture
+npm run test:frontend-unit
+cargo test --offline --locked -p io-frontend --test io_frontend_pocketic -- --nocapture
+cargo test --offline --locked -p e2e-real-canisters acceptance_sale::real_nns_existing_id_noncontroller_refresh -- --ignored --exact --test-threads=1 --nocapture
+cargo test --offline --locked -p e2e-real-canisters acceptance_sale::real_launch_timer_only_top_up_and_reward -- --ignored --exact --test-threads=1 --nocapture
+cargo run --offline --locked -p xtask -- acceptance_sale_real
+cargo test --offline --locked -p e2e-real-canisters acceptance_sale::real_checkpoint_c_negative_cases -- --ignored --exact --test-threads=1 --nocapture
+cargo test --offline --locked -p e2e-real-canisters acceptance_sale::real_checkpoint_a_b_negative_cases -- --ignored --exact --test-threads=1 --nocapture
+cargo run --offline --locked -p xtask -- test_ci
+```
+
+Browser construction used
+`bash tools/acceptance/build-frontend /home/codexdev/.cache/io/acceptance-hardening-WkhZEp0k/frontend-verified`,
+then the existing offline locked release build for Stream, NNS Manager and
+Historian. The separate same-source `contract` command and its full bundle
+path are recorded above. The aggregate ran the requested `cargo fmt --all --
+--check`, `cargo check --workspace --all-targets`, `cargo test --workspace`,
+`cargo clippy --workspace --all-targets --all-features -- -D warnings`, DID,
+stable-storage and simplicity gates. No mainnet query, permission inspection,
+credential access, deployment or new SNS source/dependency download occurred.
+
+| Correction | Final classification | Focused proof |
+|---|---|---|
+| A: initial anchor dust | FIXED_AND_TESTED | Below/exact/excess threshold cases; real C unchanged constructors; fee consumption distinct from seed |
+| B: browser artifact | FIXED_AND_TESTED | Isolated explicit configuration; executable/manifest/hash/Wasm binding; installed HTML/JS equality and private-manifest 404 |
+| C: SNS provenance | FIXED_AND_TESTED | Shared compiled approval boundary; source/parser/all-six Wasm/DID mutations; real same-source capability contract |
+| D: autonomous TopUp | FIXED_AND_TESTED | Reproduced Busy stall; existing callback resumes same durable operation; timer-only checkpoint and reward progression passed |
+| E: full-neuron read | SOURCE_PROVEN_EXTERNAL_PRECONDITION | Local controller/hotkey success, unrelated operator denied; real authorized observer remains unverified |
+
+Net implementation line changes are +17 monetary runtime, +14 frontend build
+support, and +719 acceptance/test tooling and source-binding data (including
+181 lines in the two new host-only files). No new production runtime module,
+stable field/schema, public method, worker, queue or timer is introduced.
+The source pin literals are consolidated; one shared browser validator serves
+both checkpoints and the existing test infrastructure. These additions prove
+the five requested properties rather than add another deployment path.
+
+The corrective package is `LOCALLY_REHEARSED_AWAITING_INPUTS`, not approved for
+deployment. Remaining external inputs are human sale/metadata decisions,
+actual Jupiter mirror and Vote-only integration, final SNS source/artifact
+approval, canonical acceptance identity/subnet observations, and an existing
+authorized permanent-neuron observer. No unfinished IO implementation was
+identified beyond these corrections; the repository-wide security and host
+validation blockers above remain explicit.
+
+Final input hash rechecks matched the tested files. The resolved bundle manifest
+SHA-256 is `1c7b278cca608e134357d3e9d43d32bb4d900f2ea27e51a16e1650f15c162192`;
+the parser binary is
+`cbecc3f7ffd09bac9274f4a6ad16fdb85a23fadbdbb29d7bf9ff3842fe75c797`.
+Its adapter/build-input binding and reviewed friendly-parser hash remain
+required. All six raw/compressed Wasm hashes match the source-built table
+above. The required DIDs also matched their Git blobs at the rehearsal pin:
+
+| DID | SHA-256 |
+|---|---|
+| Governance | `0d3a00e821c8959991cfb90f4366d101fce340e78f3fb76b0de4ed28c1c08c38` |
+| Root | `9867bfe913aa17d42d891c22187273e643eedb3ec8e4b3af4b894e74945d5806` |
+| Ledger | `6ce029d5dc6a430bd9cdc8adcabfb32f7e497dcafaa360974d3d1770b225df52` |
+| Index | `c029dc066f5b8a9312fb79d1ae193c59228a3818b649df25773ac3e1fadbeab6` |
+| Swap | `2f0c524b3f4dd84a63ef0cbe8df37042ad662f7befc9612afe9b9e15ce900f56` |
+| Archive | `e0a2ec22f38e8fd450b2aff24d68aefddbf5108bb43c23ee7e854bb956e9c0ee` |
+
+After validation, original tracked `public/index.html`, the entire pre-existing
+ignored generated directory (bundle and manifest together), release artifacts
+and pre-existing debug artifacts were restored and compared byte-for-byte with
+the starting backups. Changed validation outputs were moved recoverably to
+`/home/codexdev/.cache/io/acceptance-hardening-WkhZEp0k/post-aggregate-final`.
+No unrelated work was discarded. No run-owned live PocketIC server remains.
+
+Post-restoration checks passed: all 23 acceptance component tests, formatting,
+`did_surface`, `validate_stable_storage`, `simplicity_check`, draft
+`acceptance_preflight`, build-wrapper shell syntax and `git diff --check`.
+The implementation/new-file hashes above are unchanged. Subsequent edits are
+explanatory documentation only; the failed full aggregate is not relabelled
+or rerun solely for those edits. Branch/HEAD and upstream 0/0 are unchanged;
+nothing is staged, committed or pushed. Mainnet deployment remains unauthorized.

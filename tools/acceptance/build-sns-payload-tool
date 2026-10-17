@@ -15,7 +15,8 @@ if len(sys.argv) != 3:
     sys.exit('usage: build-sns-payload-tool IC_CHECKOUT OUTPUT_DIRECTORY')
 ic = pathlib.Path(sys.argv[1]).resolve()
 out = pathlib.Path(sys.argv[2]).resolve()
-pin = 'fcc281f7200a8d3192ec46c225b436b2096bbf58'
+baseline = pathlib.Path(__file__).resolve().parents[2] / 'deploy/acceptance/sns-source-baseline.json'
+pin = json.loads(baseline.read_text())['commit']
 head = subprocess.check_output(['git', '-C', str(ic), 'rev-parse', 'HEAD'], text=True).strip()
 if head != pin or subprocess.check_output(['git', '-C', str(ic), 'status', '--porcelain']):
     sys.exit('requires the clean pinned IC source')

@@ -4,6 +4,7 @@
   "additional_observed_or_derived_sealing_inputs": [
     "canonical Jupiter SNS voting-duration and action-criticality parameters for a deadline feasibility comparison with IO",
     "complete canonical permanent-neuron observation and staking subaccount",
+    "an existing authorized full-neuron observer (controller/hotkey or authorized ManageNeuron followee principal) for both typed before/after replies; real acceptance read permission remains unverified and blocks checkpoint A if absent",
     "acceptance Jupiter activation block floor",
     "current-source IO artifact hashes",
     "canonical observation of successful sale finalization and actual accepted participation",
@@ -37,7 +38,10 @@
   ],
   "proven_framework_authority_constraints": [],
   "source_findings_requiring_live_proof": [],
-  "local_build_constraints": [],
+  "local_build_constraints": [
+    "2026-10-16 offline security_scan_required rejects the unchanged reference Cargo.lock: quinn-proto 0.11.15 (RUSTSEC-2026-0338/0339/0340/0341/0342) and rustls 0.23.40 (RUSTSEC-2026-0285/0346/0348/0349). Separate reviewed dependency remediation is required; no exception or dependency change is included in the five acceptance corrections.",
+    "2026-10-16/17 final corrective test_ci is not green: its first complete Stream target passed 24/24, but the repeated target lost PocketIC after 9 passes (15 transport failures); workspace NNS recovery lost PocketIC after 1 pass (28 transport failures, near its 1800-second host limit). Resource logs show sustained roughly 127-170 MiB available RAM and no swap. A fresh exact payout-deferral retry also lost its server. No monetary assertion failed; host pressure is observed, an OOM cause is not proven. Reliable aggregate rerun remains required."
+  ],
   "completed_independent_tests": [
     "Pinned parser/pre-execution/builder accepted generated local 3 IO / 3 ICP configuration; parsed acceptance/production economics match; five mutations rejected. Deployment parameters remain unapproved.",
     "Real PocketIC 14 NNS existing-ID non-controller refresh succeeded and preserved controller/configuration; three valid Configure operations returned NotAuthorized.",
@@ -50,6 +54,11 @@
     "Extracted real checkpoint C mutation test passed in 178.65 seconds.",
     "Offline deployment-context and existing permanent-neuron support implemented; 21 acceptance component tests passed. Mainnet observations are not claimed.",
     "Canonical test_ci passed after the final launch and configuration repairs.",
-    "The current-source candidate reward-share integration passed serially against the pinned Governance candidate."
+    "The current-source candidate reward-share integration passed serially against the pinned Governance candidate.",
+    "2026-10-16 corrective focused tests passed: 23 acceptance component tests, 41 browser unit tests, installed acceptance HTML/JS byte checks, real checkpoint C mutations (757.96 seconds), and expanded real A/B integrity mutations (840.32 seconds). Excess initial anchor funding leaves constructor economics unchanged.",
+    "2026-10-16 timer-only real launch passed in 362.73 seconds: generation-1 TopUp and structural checkpoint finalized, then generation 2 and an eligible reward event progressed with zero keeper calls. Keeper-assisted acceptance_sale_real also passed in 282.89 seconds, preserving the genuine sale and ordinary Governance/Root path.",
+    "2026-10-16 full-neuron authorization passed locally in 72.94 seconds: canister controller and explicit fixture hotkey read the typed record without changing it; unrelated operator is NotAuthorized. Real acceptance read authority is not verified.",
+    "2026-10-16/17 final corrective test_ci passed formatting, all-targets check, interface/stable/simplicity gates, recorded-source reproduction, frontend checks, unit tests, the first complete 24-case Stream target, NNS/Historian/topology/Root groups, and strict all-features clippy. Its security and later PocketIC transport failures above supersede any implication that the historical green aggregate proves this corrective tree.",
+    "2026-10-17 isolated current-code Dynamic dust/fee regression passed in 153.16 seconds: fixed 10 ICP anchor, excluded unsolicited surplus, zero initial claim credit, anchor-only fee consumption and exact permit replay. This narrow pass does not make the failed aggregate green."
   ]
 }

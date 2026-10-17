@@ -1047,7 +1047,15 @@ fn frontend_generation_starts_from_an_empty_generated_directory() {
 
     let builder =
         fs::read_to_string(root.join("canisters/frontend/web/build-frontend.mjs")).unwrap();
-    assert!(builder.contains("cleanGeneratedDirectory();"));
+    assert!(builder.contains("cleanGeneratedDirectory(generatedDir);"));
+    assert!(builder.contains("process.env.IO_FRONTEND_PUBLIC_DIR"));
+
+    let runner = fs::read_to_string(root.join("tools/xtask/src/main.rs")).unwrap();
+    let ci = runner.split("\"test_ci\" => {").nth(1).unwrap();
+    assert!(
+        ci.find("\"frontend_required\"").unwrap() < ci.find("\"test_unit\"").unwrap(),
+        "CI must build matching frontend Wasm before package tests run"
+    );
 }
 
 #[test]

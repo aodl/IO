@@ -25,4 +25,5 @@ io-nns-neuron-manager.workspace = true
 sha2 = "0.10.9"
 
 [dev-dependencies]
+ic-http-certification.workspace = true
 tempfile = "3.23.0"

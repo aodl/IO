@@ -9232,10 +9232,8 @@ fn main() -> ExitCode {
         }
         "frontend_certified_asset_tests" => {
             ok &= run_subcommand("frontend_build");
-            ok &= run(
-                "unit: io-frontend assets",
-                cargo_test(&["-p", "io-frontend"]),
-            );
+            // Build embedded assets before any test compares served bytes with
+            // the freshly generated public directory.
             if env::var_os("POCKET_IC_BIN").is_some() {
                 ok &= run_subcommand("build_debug_canisters");
                 ok &= run(
@@ -9245,6 +9243,10 @@ fn main() -> ExitCode {
             } else {
                 eprintln!("skipping frontend PocketIC smoke: POCKET_IC_BIN is not set");
             }
+            ok &= run(
+                "unit: io-frontend assets",
+                cargo_test(&["-p", "io-frontend"]),
+            );
         }
         "frontend_required" => {
             ok &= run_subcommand("frontend_setup");
@@ -10054,8 +10056,8 @@ fn main() -> ExitCode {
                 "validate_local_sns_committed_evidence",
                 "validate_local_sns_scripts",
                 "security_scan_required",
-                "test_unit",
                 "frontend_required",
+                "test_unit",
                 "test_pocketic_required",
                 "sns_pocketic_required",
                 "sns_root_lifecycle_required",

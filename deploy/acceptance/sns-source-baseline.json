@@ -3,6 +3,8 @@
   "repository": "https://github.com/dfinity/ic",
   "inspected_local_checkout": "/home/codexdev/src/ic",
   "commit": "fcc281f7200a8d3192ec46c225b436b2096bbf58",
+  "approval_scope": "local-rehearsal-only; final deployment source approval unresolved",
+  "friendly_parser_sha256": "7f3c901c5a21233b0e0979a7fd7b6aa1c6d2455bddd5d6d2028156eefd8c7dd1",
   "checkout_dirty_at_inspection": false,
   "reward_event_participation_candid": {
     "reward_event_end_timestamp_seconds": "opt nat64",

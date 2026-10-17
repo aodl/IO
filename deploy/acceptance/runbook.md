@@ -32,11 +32,26 @@ done
 Stop unless all IDs match the positive allowlist and are reserved/empty under
 the expected reservation controllers.
 
-Record the permanent neuron before any top-up:
+Permanent-neuron observation is an explicit predeployment authorization gate.
+The method is NNS Governance `get_full_neuron`. Its authorized callers are the
+neuron controller, its registered hotkeys, and controllers/hotkeys of a neuron
+it follows on the `ManageNeuron` topic. An unrelated operator is rejected.
+Controlling the NNS Manager canister does not make an operator that canister's
+principal. Permissionless existing-ID `ClaimOrRefresh` grants no read authority.
+
+Before any funding, separately verify that an **existing** operator observation
+principal satisfies that permission contract. Prefer an existing authorized
+hotkey; this permission also grants voting authority and is not read-only
+authority. Do not add a hotkey or change following/controller permissions to
+make this checklist pass. The local authorization test uses explicit PocketIC
+senders and proves the source contract, not any real acceptance permission.
+
+The following is an inert mainnet template, usable only after separate mainnet
+authorization and verification of the selected existing caller:
 
 ```sh
-dfx canister call --network ic rrkah-fqaaa-aaaaa-aaaaq-cai \
-  get_full_neuron '(4_021_054_791_166_218 : nat64)'
+dfx --identity VERIFIED_EXISTING_AUTHORIZED_OBSERVER canister call --network ic rrkah-fqaaa-aaaaa-aaaaq-cai \
+  get_full_neuron '(4_021_054_791_166_218 : nat64)' --output raw
 ```
 
 Record neuron ID, controller, staking Account/subaccount, cached stake, ordinary
@@ -45,6 +60,23 @@ and pending maturity disbursements. Stop unless the controller is
 `gosbn-sqaaa-aaaas-amxua-cai`, delay is exactly 63,115,200 seconds, the neuron is
 non-dissolving, auto-stake is disabled, and no maturity disbursement is pending.
 Ordinary/staked maturity is neither `B` nor part of the top-up calculation.
+Decode the raw response's hexadecimal Candid bytes directly into
+`permanent-full-neuron-before.bin`; do not reconstruct the record from JSON or
+a public summary. Retain this authentic typed `Result<Neuron, GovernanceError>`
+response, and repeat through the same authorized path
+for `permanent-full-neuron-after.bin` after refresh. Preserve hotkeys and
+followees in both observations. Public `get_neuron_info` proves public stake and
+delay fields but does not supply controller, Account, hotkeys, following or
+maturity-disbursement evidence; it cannot replace these files.
+
+If no existing authorized observer can provide these replies, stop checkpoint A
+before funding or installation. The empty NNS Manager cannot originate the read
+at that stage, and its production interface has no full-neuron export. The
+smallest alternatives are an already authorized observation principal, or a
+separately reviewed sequence using an existing controller-originated read path
+if one is available. Neither a new public inspection endpoint nor an automatic
+permission change is part of this package. Real acceptance read authority is
+unverified.
 
 ## Checkpoint sequence
 
@@ -83,8 +115,8 @@ from the first unproved postcondition; it never means blindly repeat a mutation.
 |---:|---|---|
 | 1 | Review source and pre-SNS inputs (checkpoint A). | Require one final same-source SNS bundle, approved sale and valid metadata, exact identities, baseline observations and proven install authority. Do not require post-sale C0 or final topped-up principal here. Use the explicit A boundary; the monolithic sealed package check does not prove it. |
 | 2 | Run the nine status observations above. | Require frozen empty IDs, allowlisted reservation controllers, sufficient cycles and recorded subnets. Stop on an installed module or unknown controller. |
-| 3 | Observe the permanent neuron before funding. | Bind its exact staking Account and baseline cached stake; retain maturity observations separately. Stop on any configuration contradiction or pending maturity disbursement. |
-| 4 | Build the final SNS bundle through `tools/scripts/test-sns-framework` from the supplied sale source. | Require clean source and Governance/Root/Ledger/Index/Swap/Archive Wasms and DIDs from the same commit. Stop on component mixing. |
+| 3 | Obtain the authorized full-neuron response before funding. | Require the existing caller permission above, canonical typed evidence, exact staking Account and baseline cached stake; retain maturity observations separately. Stop on denied/unknown read authority, configuration contradiction or pending maturity disbursement. |
+| 4 | Review the final source approval and build through `tools/scripts/test-sns-framework`. | `sns-source-baseline.json` is the reviewed source authority consumed by the parser builder and compiled validators. Its pin is local rehearsal evidence, not final approval. Require clean source and all six SNS Wasms/DIDs from the reviewed commit. Caller-provided matching hashes cannot authorize a different revision. |
 | 5 | Render SNS inputs only; leave final IO constructors for checkpoint C. | Require 1B IO: operator 30 IO, Jupiter 100M IO, sale S, reserve 899,999,970-S IO; reject cost 10 IO, minimum stake 1 IO. Require zero IO treasury/future Swap, NF disabled, valid baskets and real parser validation. |
 | 6 | Install the five SNS canisters using the reviewed preallocated-canister procedure; preload IO chunks into Governance before relinquishing operator control. | Require exact module hashes and source-defined controller transitions. Stop if the final framework cannot safely use the frozen IDs. |
 | 7 | Query Ledger genesis balances before opening the sale. | Require total supply 1B and exact operator/Jupiter/reserve/Swap distribution. The Jupiter staking Account owner must be IO SNS Governance and its subaccount must derive from the acceptance SNS Rewards controller plus memo `IOJUP001`. Treasury and future Swap must be zero. Stop on unexplained balances. |
@@ -99,14 +131,14 @@ from the first unproved postcondition; it never means blindly repeat a mutation.
 | 16 | Top up the already verified permanent-neuron staking Account by exactly the generated `Delta K` transfer amount. | Recheck the baseline immediately before transfer. Stop if it differs from checkpoint 3. Preserve the transfer block and inspect it before any retry. |
 | 17 | Submit canonical NNS `ClaimOrRefresh` for neuron `4_021_054_791_166_218`, then re-read it. | Require final cached stake to reflect the verified baseline plus the canonical credited top-up. Record controller/configuration again. Bind `audited_permanent_principal_e8s` only to this final observed cached principal. Never count ordinary/staked maturity. |
 | 18 | Observe pre-funding `B`, then transfer exactly `B0-B` ICP e8s to Stream liquid AccountIdentifier `104871600196c2231e927e1db940290ad0fed08c2c6e593a9b73094a28c346cd`. | Require final canonical claim backing exactly `C0`; stop if pre-funding `B>C0`. Record the block before any retry. Query IO total supply before/after and require no IO issuance. |
-| 19 | Operator contributes 10 ICP to Dynamic AccountIdentifier `23f97e98045b2376759598bdd5b49e538f1c19cfd96280437f7c72a2cb1b8362`. | Verify NNS Manager controller derivation and memo 0; canonical funding must be at least the 10 ICP anchor, not equal to it. Harmless dust remains excluded surplus, adds no claim backing and creates no replenishable anchor entitlement. |
+| 19 | Operator contributes 10 ICP to Dynamic AccountIdentifier `23f97e98045b2376759598bdd5b49e538f1c19cfd96280437f7c72a2cb1b8362`. | Verify controller derivation and memo 0. Checkpoint C's `dynamic_anchor_seed_e8s` is the initial canonical balance before fees: reject below 10 ICP, accept 10 ICP or excess. Anchor entitlement stays 10 ICP; excess is excluded surplus and adds no B, C, issuance or permanent credit. Later reconciliation can consume anchor fees; do not reapply the initial threshold to that later balance. |
 | 20 | Use an adopted Governance proposal to have Root install NNS Manager with the final observed permanent principal. | Require current-source hash and exact SNS/Stream/Jupiter/NNS identities, fees, block floor and Accounts. |
 | 21 | Observe autonomous Dynamic bootstrap. | Require ClaimOrRefresh, NNS Manager controller, exact 14-day delay/following, canonical refreshes and recorded parent. Do not manually create it. |
 | 22 | Observe NNS Manager readiness. | Require autonomous `Paused -> Ready`, controller/baseline checks and timers without lifecycle proposals. Monetary runtime readiness has no Jupiter-mirror heartbeat dependency. |
 | 23 | Use an adopted Governance proposal to have Root install Stream with its checkpoint C constructor. | Require exact Ledger/Index/Root/Governance/NNS identities, module hash, fees and exactly the reserve and Jupiter-neuron explicit exclusions. |
 | 24 | Observe Stream readiness and economic snapshot. | Require autonomous `Paused -> Ready`, `C=C0`, `B=B0`, canonical rate 1 ICP/IO, no sale-proceeds backing entry, and no active/reward/Dynamic weight from the 100M Jupiter stake. |
 | 25 | Exercise a redemption. | Derive gross ICP from the canonical admission-time B/C ratio; the initial 1:1 reference rate does not erase later IO fee burns. Net payout subtracts the applicable ICP fee. Preserve current fee and exact-proof behavior. |
-| 26 | Use adopted Governance proposals to have Root install Historian and Frontend; verify the reviewed controller graph. | Require exact hashes and allowlisted identities. Any fallback is separately sealed. |
+| 26 | Use adopted Governance proposals to have Root install Historian and the verified acceptance Frontend; verify the reviewed controller graph. | Build the browser before Rust as described below. Require exact installed Wasm hashes, served HTML/JS bytes and acceptance configuration. Any fallback is separately sealed. |
 | 27 | Operator submits through its 30 IO neuron under SubmitProposal authority. | Observe the 10 IO assessed reject cost, clearing on adoption or retention on rejection, and subsequent effective stake. Prove operator Yes alone cannot carry adoption against idle Jupiter voting power. Governance readiness is separate from monetary runtime readiness. |
 | 28 | Exercise the future Jupiter mirror from the actual acceptance SNS Rewards canister. | Require allowlisted IO Governance observation, unambiguous proposal mapping, finalized authenticated Jupiter decision, correct IO proposal/neuron vote, upgrade-safe retry state, and execution before the action-specific IO deadline. Human impersonation and operator following are invalid. Compare action-type deadlines across both SNSs; the daily owner-index scan is not presumed sufficient. |
 | 29 | Exercise the current `opt nat64`/`opt nat` reward-share path with Jupiter abstaining, voting Yes and voting No. | Require the real candidate to count Jupiter's SNS voting power while Stream gives its exact excluded Account zero IO credits and denominator weight; ordinary-neuron economic credits must be identical across those Jupiter choices. |
@@ -120,8 +152,9 @@ The local-only executable entry point is `cargo run -p xtask -- acceptance_sale_
 It requires the pinned parser adapter (`IO_ACCEPTANCE_SNS_PAYLOAD_TOOL`), the
 resolved same-source bundle (`IO_REAL_SNS_WASM_DIR` and
 `IO_REAL_SNS_WASM_MANIFEST`), current-source IO Wasms
-(`IO_ACCEPTANCE_IO_WASM_DIR`), and `POCKET_IC_BIN`. The driver generates a fresh
-local evidence directory and invokes:
+(`IO_ACCEPTANCE_IO_WASM_DIR`), the isolated acceptance browser/Wasm output
+(`IO_ACCEPTANCE_FRONTEND_BUILD_DIR`), and `POCKET_IC_BIN`. The driver generates
+a fresh local evidence directory and invokes:
 
 ```sh
 cargo run -p xtask -- acceptance_checkpoint A LOCAL_EVIDENCE_DIRECTORY
@@ -148,6 +181,40 @@ application subnet. Its execution status is reported separately from source
 inspection. The deferred-registration candidate remains available to component
 cases and does not alter production requirements. Real Jupiter mirror
 integration remains external.
+
+### Acceptance browser artifact construction
+
+Use `bash tools/acceptance/build-frontend ABSOLUTE_NEW_OUTPUT_DIRECTORY` with
+installed locked npm/Cargo inputs. It copies public assets to the new output,
+then invokes the existing `npm run build:frontend` followed by the offline locked
+release Rust/Wasm build. It explicitly sets all six browser inputs:
+
+```text
+IO_FRONTEND_NETWORK=ic
+CANISTER_ID_IO_HISTORIAN=gaqmf-jaaaa-aaaas-amxva-cai
+CANISTER_ID_IO_STREAM_MANAGER=gjthz-7iaaa-aaaas-amxuq-cai
+CANISTER_ID_IO_LEDGER=hn6il-giaaa-aaaas-amxsq-cai
+CANISTER_ID_FRONTEND=ghrkr-eyaaa-aaaas-amxvq-cai
+IO_FRONTEND_DEMO=false
+```
+
+Neither `.dfx` discovery nor inherited values override these assignments.
+Set `IO_ACCEPTANCE_FRONTEND_BUILD_DIR` to that output for local acceptance and
+`cargo test -p io-frontend --test io_frontend_pocketic -- --nocapture`.
+Checkpoint A requires `io-artifacts.json`'s frontend `browser_assets` to name
+its `public/` directory. It validates manifest/config, the executable JSON
+configuration, content-addressed bundle bytes, HTML reference, and those exact
+embedded bytes in the hash-bound install Wasm. The PocketIC asset test queries
+HTML and its JS path and compares response bytes, while the private manifest
+must return 404. Retain the isolated output with the evidence. This construction
+does not modify tracked `public/` or approve a final production browser build.
+
+The complementary `acceptance_sale::real_launch_timer_only_top_up_and_reward`
+test uses the real sale and Governance/Root installations, then only simulated
+time, ticks and status queries through initial TopUp completion, finalized
+structural reconciliation and a later eligible reward event. The original
+`acceptance_sale_real` path retains explicit keepers for deterministic recovery
+and redemption. Keep their evidence distinct; neither asserts a one-minute SLA.
 
 ## Explicitly prohibited launch paths
 

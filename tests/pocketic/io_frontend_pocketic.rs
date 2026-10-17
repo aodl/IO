@@ -47,9 +47,14 @@ fn pocketic_frontend_serves_certified_assets_and_404() {
         return;
     }
 
-    let wasm_path = workspace_path("target/wasm32-unknown-unknown/debug/io_frontend.wasm");
+    let acceptance = std::env::var_os("IO_ACCEPTANCE_FRONTEND_BUILD_DIR").map(PathBuf::from);
+    let wasm_path = acceptance
+        .as_ref()
+        .map(|dir| dir.join("io_frontend.wasm"))
+        .unwrap_or_else(|| workspace_path("target/wasm32-unknown-unknown/debug/io_frontend.wasm"));
     let wasm = match required_wasm(&wasm_path) {
         Some(wasm) => wasm,
+        None if acceptance.is_some() => panic!("required acceptance frontend Wasm is missing"),
         None => return,
     };
 
@@ -65,6 +70,10 @@ fn pocketic_frontend_serves_certified_assets_and_404() {
         assert!(!did.contains(" get_state :"));
     }
 
+    let public = acceptance
+        .as_ref()
+        .map(|dir| dir.join("public"))
+        .unwrap_or_else(|| workspace_path("canisters/frontend/public"));
     let pic = PocketIc::new();
     let frontend = pic.create_canister();
     pic.add_cycles(frontend, CYCLES);
@@ -73,6 +82,10 @@ fn pocketic_frontend_serves_certified_assets_and_404() {
     let index = query_http(&pic, frontend, "/");
     assert_eq!(index.status_code(), StatusCode::OK);
     let index_html = String::from_utf8_lossy(index.body());
+    assert_eq!(
+        index.body(),
+        std::fs::read(public.join("index.html")).unwrap()
+    );
     assert!(index_html.contains("REAL LIQUID STAKING"));
     let start = index_html.find("/generated/app.").expect("bundle path");
     let end = index_html[start..].find(".js").expect("bundle suffix") + start + 3;
@@ -80,6 +93,10 @@ fn pocketic_frontend_serves_certified_assets_and_404() {
 
     let bundle = query_http(&pic, frontend, bundle_path);
     assert_eq!(bundle.status_code(), StatusCode::OK);
+    assert_eq!(
+        bundle.body(),
+        std::fs::read(public.join(&bundle_path[1..])).unwrap()
+    );
     assert!(bundle
         .headers()
         .iter()

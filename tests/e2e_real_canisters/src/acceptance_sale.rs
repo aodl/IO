@@ -3,6 +3,7 @@
 
 use crate::{artifacts, icrc, pocketic_env, sns_governance_setup as gov, sns_lifecycle as swap};
 use candid::{decode_one, encode_one, CandidType, Nat, Principal};
+use ic_http_certification::{HttpRequest, HttpResponse, StatusCode};
 use io_ledger_types::{
     Account, IcpTokens, IcpTransferArgs, IcpTransferError, IcrcAccount, Subaccount,
 };
@@ -25,15 +26,25 @@ struct LedgerTip {
     chain_length: u64,
 }
 
-const PIN: &str = "fcc281f7200a8d3192ec46c225b436b2096bbf58";
+fn approved_sns_source() -> String {
+    let baseline: Value = serde_json::from_str(include_str!(
+        "../../../deploy/acceptance/sns-source-baseline.json"
+    ))
+    .unwrap();
+    baseline["commit"].as_str().unwrap().into()
+}
 const SALE: u64 = 300_000_000;
 const TOTAL: u64 = 100_000_000_000_000_000;
 const OPERATOR_MEMO: u64 = 0x494f_474f_5630_3031;
 const JUPITER_MEMO: u64 = 0x494f_4a55_5030_3031;
 const RESERVE_MEMO: u64 = 0x494f_5245_5330_3031;
 
+#[path = "../../../tools/acceptance/frontend_assets.rs"]
+mod frontend_assets;
+
 // The C boundary performs offline artifact/payload checks without touching PIC.
-// Use the existing harness's owned-server pattern with a sufficient idle TTL.
+// Use the existing harness's owned-server pattern. Offline checks can be
+// delayed by host build contention; wall-clock lifetime is not simulated time.
 struct AcceptanceServer {
     child: std::process::Child,
     port_file: PathBuf,
@@ -56,7 +67,7 @@ impl AcceptanceServer {
                 .as_nanos()
         ));
         let child = Command::new(std::env::var_os("POCKET_IC_BIN").expect("PocketIC required"))
-            .args(["--ttl", "600", "--hard-ttl", "2400", "--port-file"])
+            .args(["--ttl", "3600", "--hard-ttl", "7200", "--port-file"])
             .arg(&port_file)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -126,7 +137,17 @@ fn prepare_io_artifacts(evidence: &Path) {
         ("historian", "io_historian"),
         ("frontend", "io_frontend"),
     ] {
-        let bytes = fs::read(source.join(format!("{name}.wasm"))).unwrap();
+        let frontend_build =
+            std::env::var_os("IO_ACCEPTANCE_FRONTEND_BUILD_DIR").map(PathBuf::from);
+        let wasm_path = if role == "frontend" {
+            frontend_build
+                .as_ref()
+                .expect("build isolated acceptance frontend first")
+                .join("io_frontend.wasm")
+        } else {
+            source.join(format!("{name}.wasm"))
+        };
+        let bytes = fs::read(wasm_path).unwrap();
         let hash = hex::encode(Sha256::digest(&bytes));
         let path = destination.join(format!("{name}.wasm"));
         fs::write(&path, bytes).unwrap();
@@ -136,6 +157,15 @@ fn prepare_io_artifacts(evidence: &Path) {
             role.into(),
             json!({"path":path,"raw_wasm_sha256":hash,"sha256_sidecar":sidecar}),
         );
+        if role == "frontend" {
+            let public = frontend_build.unwrap().join("public");
+            let bytes = fs::read(&path).unwrap();
+            let evidence =
+                frontend_assets::validate(&public, &bytes, &frontend_assets::acceptance_config())
+                    .unwrap();
+            modules.get_mut(role).unwrap()["browser_assets"] = json!(public);
+            write_json(&destination.join("frontend-assets.json"), &evidence);
+        }
     }
     write_json(
         &evidence.join("io-artifacts.json"),
@@ -166,7 +196,10 @@ impl Sale {
             "sns_swap",
             "sns_archive",
         ] {
-            assert_eq!(artifacts.manifest.artifact(key, "source_commit"), Some(PIN));
+            assert_eq!(
+                artifacts.manifest.artifact(key, "source_commit"),
+                Some(approved_sns_source().as_str())
+            );
             artifacts.load_required(key).unwrap();
             artifacts.load_required_source_wasm_gz(key).unwrap();
         }
@@ -174,12 +207,10 @@ impl Sale {
             std::env::var_os("IO_ACCEPTANCE_SNS_PAYLOAD_TOOL")
                 .expect("build pinned SNS payload tool first"),
         );
-        let (server, pic) = if root_install {
+        let (server, pic) = {
             let (server, url) = AcceptanceServer::start();
             let pic = pocketic_env::new_pic_with_nns_governance_server(&url);
             (Some(server), pic)
-        } else {
-            (None, pocketic_env::new_pic_with_nns_governance_features())
         };
         let app = pic.topology().get_app_subnets()[0];
         let operator = Principal::from_slice(&[101; 29]);
@@ -1384,6 +1415,10 @@ impl Sale {
 
 impl Sale {
     fn install_io(&self, mutations_only: bool) {
+        self.install_io_with_progress(mutations_only, false);
+    }
+
+    fn install_io_with_progress(&self, mutations_only: bool, timer_only: bool) {
         let context: Value =
             serde_json::from_slice(&fs::read(self.evidence.join("context.json")).unwrap()).unwrap();
         let modules: Value =
@@ -1402,10 +1437,21 @@ impl Sale {
         );
         checkpoint(&self.evidence, "C");
         if mutations_only {
+            // Excess initial funding must leave every generated monetary
+            // constructor unchanged. C compares their exact existing bytes.
+            let path = self.evidence.join("observation-c.json");
+            let original = fs::read(&path).unwrap();
+            let mut excess: Value = serde_json::from_slice(&original).unwrap();
+            for seed in [1_000_000_001_u64, 6_000_000_000] {
+                excess["dynamic_anchor_seed_e8s"] = json!(seed);
+                write_json(&path, &excess);
+                checkpoint(&self.evidence, "C");
+            }
+            fs::write(path, original).unwrap();
             for (pointer,value) in [("/permanent_dissolve_delay_seconds",json!(63_115_199)),
             ("/permanent_cached_stake_after_refresh_e8s",json!(1)),("/permanent_controller",json!(self.operator.to_text())),
             ("/effective_governance_parameters/voting_rewards_parameters/initial_reward_rate_basis_points",json!(1)),
-            ("/effective_governance_parameters/max_number_of_neurons",json!(200_000)),("/dynamic_anchor_seed_e8s",json!(0))] {
+            ("/effective_governance_parameters/max_number_of_neurons",json!(200_000)),("/dynamic_anchor_seed_e8s",json!(999_999_999))] {
             mutation(&self.evidence,"observation-c.json",pointer,value,"C");
         }
             let path = self.evidence.join("constructors/stream.bin");
@@ -1572,6 +1618,53 @@ impl Sale {
             encode_one(&summary).unwrap(),
         )
         .unwrap();
+        let frontend = Principal::from_text(context["frontend"].as_str().unwrap()).unwrap();
+        let public = Path::new(modules["frontend"]["browser_assets"].as_str().unwrap());
+        let checked = frontend_assets::validate(
+            public,
+            &fs::read(modules["frontend"]["path"].as_str().unwrap()).unwrap(),
+            &frontend_assets::acceptance_config(),
+        )
+        .unwrap();
+        let get = |url: &str| -> HttpResponse<'static> {
+            let request =
+                encode_one(HttpRequest::get(url).with_certificate_version(2).build()).unwrap();
+            assert_eq!(
+                decode_one::<HttpRequest<'_>>(&request)
+                    .unwrap()
+                    .certificate_version(),
+                Some(2)
+            );
+            decode_one(
+                &self
+                    .pic
+                    .query_call(frontend, Principal::anonymous(), "http_request", request)
+                    .unwrap(),
+            )
+            .unwrap()
+        };
+        let html = get("/");
+        assert_eq!(html.status_code(), StatusCode::OK);
+        assert_eq!(html.body(), fs::read(public.join("index.html")).unwrap());
+        let html_text = std::str::from_utf8(html.body()).unwrap();
+        let start = html_text.find("/generated/app.").unwrap();
+        let end = start + html_text[start..].find(".js").unwrap() + 3;
+        let bundle_path = &html_text[start..end];
+        assert_eq!(checked["bundle"], bundle_path);
+        let bundle = get(bundle_path);
+        assert_eq!(bundle.status_code(), StatusCode::OK);
+        assert_eq!(
+            bundle.body(),
+            fs::read(public.join(&bundle_path[1..])).unwrap()
+        );
+        assert_eq!(
+            get("/generated/frontend-bundle.json").status_code(),
+            StatusCode::NOT_FOUND
+        );
+        write_json(
+            &self.evidence.join("installed-frontend-assets.json"),
+            &checked,
+        );
         let manager = dapps[1];
         let mut ready = false;
         for _ in 0..180 {
@@ -1609,6 +1702,10 @@ impl Sale {
             }
         }
         assert!(ready, "IO did not become autonomously Ready");
+        if timer_only {
+            self.autonomous_top_up_and_reward(manager);
+            return;
+        }
         // Public keepers continue the same production observers used by timers.
         let mut observation = None;
         for _ in 0..120 {
@@ -1728,6 +1825,162 @@ impl Sale {
         );
     }
 }
+
+impl Sale {
+    fn autonomous_top_up_and_reward(&self, manager: Principal) {
+        let stream_status = || -> io_stream_manager::Status {
+            decode_one(
+                &self
+                    .pic
+                    .query_call(
+                        self.stream,
+                        self.operator,
+                        "get_status",
+                        candid::encode_args(()).unwrap(),
+                    )
+                    .unwrap(),
+            )
+            .unwrap()
+        };
+        let nns_status = || -> io_nns_neuron_manager::Status {
+            decode_one(
+                &self
+                    .pic
+                    .query_call(
+                        manager,
+                        self.operator,
+                        "get_status",
+                        candid::encode_args(()).unwrap(),
+                    )
+                    .unwrap(),
+            )
+            .unwrap()
+        };
+        let started = self.pic.get_time().as_nanos_since_unix_epoch();
+        let mut completed = None;
+        // Existing 60-second retry opportunities; no shortened production cadence
+        // and no update/keeper calls anywhere inside this observation window.
+        for _ in 0..120 {
+            self.pic.advance_time(Duration::from_secs(60));
+            self.pic.tick();
+            let stream = stream_status();
+            let nns = nns_status();
+            if let Some(checkpoint) = stream.latest_reconciliation_checkpoint.as_ref() {
+                if checkpoint.pooled_target_e8s > 0
+                    && checkpoint.observed_pooled_e8s == checkpoint.pooled_target_e8s
+                    && stream.operation_kind.is_none()
+                    && nns.active_operation.is_none()
+                    && nns.latest_pooled_target.as_ref().is_some_and(|target| {
+                        target.target_e8s == checkpoint.pooled_target_e8s
+                            && target.status == io_nns_neuron_manager::PooledTargetStatus::AtTarget
+                    })
+                {
+                    completed = Some(stream);
+                    break;
+                }
+            }
+        }
+        let structural = completed.unwrap_or_else(|| {
+            panic!(
+                "timer-only TopUp did not finalize: stream={:?}; nns={:?}",
+                stream_status(),
+                nns_status()
+            )
+        });
+        let checkpoint = structural
+            .latest_reconciliation_checkpoint
+            .as_ref()
+            .unwrap();
+        assert_eq!(checkpoint.active_backing_io_e8s, 3_000_000_000);
+        assert_eq!(checkpoint.pooled_backing_e8s, 3_000_000_000);
+        assert_eq!(checkpoint.total_claim_backing_e8s, 3_299_980_000);
+        assert_eq!(checkpoint.claim_supply_e8s, 3_299_980_000);
+        let physical: IcpTokens = icrc::query_one(
+            &self.pic,
+            self.icp,
+            "account_balance",
+            IcpBalance {
+                account: Account::new(
+                    Principal::from_text(io_production_wiring::NNS_GOVERNANCE_PRINCIPAL).unwrap(),
+                    Some(Subaccount(gov::compute_neuron_staking_subaccount(
+                        manager, 0,
+                    ))),
+                )
+                .icp_account_identifier_bytes()
+                .to_vec(),
+            },
+        );
+        assert_eq!(
+            u128::from(physical.e8s),
+            checkpoint.pooled_backing_e8s + 1_000_000_000 - 10_000,
+            "the single initial TopUp fee must consume excluded anchor, not claim backing"
+        );
+        let mut rewards = None;
+        for _ in 0..3 {
+            self.pic.advance_time(Duration::from_secs(86_400 + 301));
+            for _ in 0..120 {
+                self.pic.tick();
+                let status = stream_status();
+                if status.processed_reward_event_count > structural.processed_reward_event_count
+                    && status.accumulated_eligible_credit > structural.accumulated_eligible_credit
+                    && status.operation_kind.is_none()
+                {
+                    rewards = Some(status);
+                    break;
+                }
+                self.pic.advance_time(Duration::from_secs(60));
+            }
+            if rewards.is_some() {
+                break;
+            }
+        }
+        let rewards = rewards.unwrap_or_else(|| {
+            panic!(
+                "timer-only reward observation did not progress: {:?}",
+                stream_status()
+            )
+        });
+        let next = rewards.latest_reconciliation_checkpoint.as_ref().unwrap();
+        assert!(
+            next.generation > checkpoint.generation,
+            "consumed generation replayed"
+        );
+        assert_eq!(next.observed_pooled_e8s, next.pooled_target_e8s);
+        assert!(!rewards.reward_processing_paused);
+        assert!(rewards
+            .accumulated_entitlements
+            .iter()
+            .all(|entry| entry.sns_neuron_id
+                == gov::compute_neuron_staking_subaccount(self.operator, OPERATOR_MEMO)));
+        let ended = self.pic.get_time().as_nanos_since_unix_epoch();
+        write_json(
+            &self.evidence.join("timer-only.json"),
+            &json!({
+            "started_at_nanos":started,"ended_at_nanos":ended,"keeper_calls":0,
+            "initial_top_up_reconciliation_generation":checkpoint.generation,
+            "dynamic_physical_principal_e8s":physical.e8s,"dynamic_anchor_fee_consumed_e8s":10_000,
+            "structural_generation":checkpoint.generation,"pooled_target_e8s":checkpoint.pooled_target_e8s,
+            "pooled_observed_e8s":checkpoint.observed_pooled_e8s,"backing_e8s":checkpoint.total_claim_backing_e8s,
+            "subsequent_generation":next.generation,"reward_event":format!("{:?}",rewards.latest_processed_reward_event),
+            "reward_events_before":structural.processed_reward_event_count,"reward_events_after":rewards.processed_reward_event_count,
+            "eligible_credit_before":structural.accumulated_eligible_credit,"eligible_credit_after":rewards.accumulated_eligible_credit}),
+        );
+        println!(
+            "timer-only evidence: {}",
+            self.evidence.join("timer-only.json").display()
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires the same real acceptance inputs as real_launch_checkpoints_a_b_c"]
+fn real_launch_timer_only_top_up_and_reward() {
+    let sale = Sale::with_initial_registration(true);
+    sale.finish();
+    sale.migrate_reserve();
+    sale.capitalize();
+    sale.install_io_with_progress(false, true);
+}
 #[derive(CandidType, Deserialize)]
 struct RootSummaryRequest {
     update_canister_list: Option<bool>,
@@ -1812,6 +2065,38 @@ fn real_checkpoint_a_b_negative_cases() {
     let d = &sale.evidence;
     assert!(!d.join("observation-b.json").exists());
     assert!(!d.join("observation-c.json").exists());
+    // Mutate only private copies of reviewed build inputs; never the shared
+    // verified cache. Real byte/DID corruption must fail before payload use.
+    let context_path = d.join("context.json");
+    let original_context = fs::read(&context_path).unwrap();
+    let mut context: Value = serde_json::from_slice(&original_context).unwrap();
+    let source = Path::new(context["bundle_path"].as_str().unwrap());
+    let copy = d.join("sns-bundle-negative");
+    fs::create_dir(&copy).unwrap();
+    fs::create_dir(copy.join("wasms")).unwrap();
+    for entry in fs::read_dir(source).unwrap() {
+        let entry = entry.unwrap();
+        if entry.file_type().unwrap().is_file() {
+            fs::copy(entry.path(), copy.join(entry.file_name())).unwrap();
+        }
+    }
+    for entry in fs::read_dir(source.join("wasms")).unwrap() {
+        let entry = entry.unwrap();
+        fs::copy(entry.path(), copy.join("wasms").join(entry.file_name())).unwrap();
+    }
+    context["bundle_path"] = json!(copy);
+    write_json(&context_path, &context);
+    checkpoint(d, "A");
+    for relative in ["wasms/sns_governance.wasm", "root.did", "governance.did"] {
+        let path = copy.join(relative);
+        let original = fs::read(&path).unwrap();
+        let mut corrupt = original.clone();
+        corrupt.push(b' ');
+        fs::write(&path, corrupt).unwrap();
+        rejects_checkpoint(d, "A");
+        fs::write(path, original).unwrap();
+    }
+    fs::write(&context_path, original_context).unwrap();
     for (file, pointer, value) in [
         (
             "accounts.json",
@@ -2383,8 +2668,11 @@ impl Sale {
 fn real_nns_existing_id_noncontroller_refresh() {
     use io_governance_types::*;
     let pic = pocketic_env::new_pic_with_nns_governance_features();
-    let owner = Principal::from_slice(&[83; 29]);
+    // Explicit canister-controller authorization fixture. Query senders below
+    // are simulated by PocketIC; this does not establish an operator read path.
     let stranger = Principal::from_slice(&[84; 29]);
+    let owner =
+        pic.create_canister_on_subnet(Some(stranger), None, pic.topology().get_app_subnets()[0]);
     let nns = Principal::from_text(io_production_wiring::NNS_GOVERNANCE_PRINCIPAL).unwrap();
     let ledger = Principal::from_text(io_production_wiring::ICP_LEDGER_PRINCIPAL).unwrap();
     let metadata: String = decode_one(
@@ -2510,5 +2798,61 @@ fn real_nns_existing_id_noncontroller_refresh() {
         after,
         "unauthorized operations changed neuron state"
     );
+    let query = |caller| -> Result<NnsNeuronRecord, NnsGovernanceErrorRecord> {
+        decode_one(
+            &pic.query_call(nns, caller, "get_full_neuron", encode_one(id).unwrap())
+                .unwrap(),
+        )
+        .unwrap()
+    };
+    let before_reads = read();
+    let denied = query(stranger).unwrap_err();
+    assert_eq!(
+        denied.error_type, 3,
+        "unrelated principal must be NotAuthorized"
+    );
+    assert_eq!(query(owner).unwrap(), before_reads);
+    assert_eq!(
+        read(),
+        before_reads,
+        "full-neuron reads changed canonical state"
+    );
+    assert_eq!(before_reads.id.as_ref().unwrap().id, id);
+    assert_eq!(before_reads.account, sub);
+    assert_eq!(before_reads.controller, Some(owner));
+    assert_eq!(before_reads.cached_neuron_stake_e8s, 300_000_000);
+    assert!(before_reads.dissolve_state.is_some());
+    assert!(before_reads.hot_keys.is_empty());
+    assert_eq!(
+        before_reads.maturity_disbursements_in_progress.as_deref(),
+        Some(&[][..])
+    );
+    let hotkey = Principal::from_slice(&[85; 29]);
+    let added = manage(
+        owner,
+        Some(id),
+        NnsManageNeuronCommandRequest::Configure(NnsProductionConfigure {
+            operation: Some(NnsProductionConfigureOperation::AddHotKey(NnsAddHotKey {
+                new_hot_key: Some(hotkey),
+            })),
+        }),
+    );
+    assert!(
+        matches!(
+            added.command,
+            Some(NnsManageNeuronResponseCommandRecord::Configure(_))
+        ),
+        "{added:?}"
+    );
+    let before_hotkey_read = read();
+    assert_eq!(before_hotkey_read.hot_keys, vec![hotkey]);
+    assert_eq!(query(hotkey).unwrap(), before_hotkey_read);
+    assert_eq!(query(stranger).unwrap_err().error_type, 3);
+    assert_eq!(
+        read(),
+        before_hotkey_read,
+        "hotkey read changed canonical state"
+    );
+    println!("full-neuron authorization: canister controller and explicit hotkey can read all typed validator fields; unrelated operator rejected; reads preserve canonical record; no mainnet permission inferred");
     println!("existing-ID non-controller refresh: 200000000 -> 300000000 e8s; controller, dissolve policy, followees, hot keys and maturity policy unchanged; Configure denied");
 }

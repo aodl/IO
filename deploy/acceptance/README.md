@@ -44,10 +44,25 @@ canisters, and permanent neuron `4_021_054_791_166_218`, controlled by the
 acceptance NNS Manager. Known production IO principals and production neuron
 `10_292_412_127_977_304_661` are secondary contamination checks.
 
-The reviewed reward-share baseline is
-`fcc281f7200a8d3192ec46c225b436b2096bbf58`. It is not automatically the final
-sale source. Governance, Root, Ledger, Index, Swap and Archive artifacts and
-DIDs must come from one clean final revision.
+The reviewed source authority is [sns-source-baseline.json](sns-source-baseline.json).
+The parser builder reads it and validators compile it into their approval
+boundary. Evidence directories and required-input hashes cannot select another
+revision. Its pin is for local rehearsal; final sale-source approval is unresolved.
+Governance, Root, Ledger, Index, Swap and Archive artifacts and DIDs must come
+from one clean approved revision with the required reward-participation ABI.
+
+Checkpoint A also requires an authorized full-neuron baseline response. An
+operator who controls the empty NNS Manager is not thereby authorized to query
+its neuron. An existing controller/hotkey or authorized ManageNeuron-followee
+principal must provide both typed full-neuron replies. Unknown read authority
+blocks the checkpoint; the runbook never adds permissions automatically.
+
+Build acceptance browser assets and Rust Wasm together using
+`bash tools/acceptance/build-frontend ABSOLUTE_NEW_OUTPUT_DIRECTORY`, then set
+`IO_ACCEPTANCE_FRONTEND_BUILD_DIR` for local tests. The isolated output preserves
+tracked frontend assets. Checkpoint A binds executable configuration, manifest,
+HTML, bundle bytes and the actual Wasm; PocketIC checks served HTML/JavaScript
+and the private manifest's 404. See the runbook for exact browser inputs.
 
 ## Genesis distribution and sale price
 

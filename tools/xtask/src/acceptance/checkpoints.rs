@@ -181,6 +181,42 @@ fn validate_raw_wasm(path: &Path, did: Option<&Path>, hidden: Option<&Path>) -> 
     Ok(())
 }
 
+fn validate_sns_source(manifest: &io_sns_manifest::SnsManifest) -> Result<(), String> {
+    if manifest.value("variant", "scope") != Some("same-source")
+        || manifest.value("variant", "ic_commit") != Some(approved_sns_source())
+        || manifest.bool_value("variant", "source_tree_clean") != Some(true)
+        || manifest.bool_value("capabilities", "latest_reward_event_participation") != Some(true)
+    {
+        return Err("A requires the clean approved same-source reward-capable bundle".into());
+    }
+    for component in ["governance", "root", "ledger", "index", "swap", "archive"] {
+        if manifest.artifact(&format!("sns_{component}"), "source_commit")
+            != Some(approved_sns_source())
+        {
+            return Err(format!("{component} source mismatch"));
+        }
+        if manifest
+            .value("contract", &format!("{component}_did_sha256"))
+            .is_none()
+        {
+            return Err(format!("required {component} DID binding missing"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_parser_binding(binding: &Value, adapter: &[u8], binary: &[u8]) -> Result<(), String> {
+    if binding["ic_commit"] != approved_sns_source()
+        || binding["ic_dirty"] != false
+        || binding["friendly_parser_sha256"] != approved_sns_baseline()["friendly_parser_sha256"]
+        || binding["adapter_sha256"] != hex::encode(Sha256::digest(adapter))
+        || binding["binary_sha256"] != hex::encode(Sha256::digest(binary))
+    {
+        return Err("pinned parser byte/source binding mismatch".into());
+    }
+    Ok(())
+}
+
 pub(crate) fn checkpoint_a(root: &Path, dir: &Path) -> Result<Value, String> {
     let context = json_at(dir, "context.json")?;
     validate_context(root, &context)?;
@@ -220,11 +256,19 @@ pub(crate) fn checkpoint_a(root: &Path, dir: &Path) -> Result<Value, String> {
     let bundle = PathBuf::from(text(&context, "bundle_path")?);
     crate::sns_framework::validate_bundle(&bundle)?;
     let manifest = io_sns_manifest::SnsManifest::read(&bundle.join("manifest.toml"))?;
-    if manifest.value("variant", "scope") != Some("same-source")
-        || manifest.value("variant", "ic_commit") != Some(REWARD_BASELINE)
-        || manifest.bool_value("variant", "source_tree_clean") != Some(true)
-    {
-        return Err("A requires the clean pinned same-source bundle".into());
+    validate_sns_source(&manifest)?;
+    for component in ["governance", "root", "ledger", "index", "swap", "archive"] {
+        let did = fs::read(bundle.join(format!("{component}.did"))).map_err(|e| e.to_string())?;
+        if manifest.value("contract", &format!("{component}_did_sha256"))
+            != Some(hex::encode(Sha256::digest(&did)).as_str())
+        {
+            return Err(format!("{component} DID hash mismatch"));
+        }
+        if component == "governance" {
+            crate::sns_framework::verify_candidate_did(
+                std::str::from_utf8(&did).map_err(|e| e.to_string())?,
+            )?;
+        }
     }
     let mut hashes = BTreeMap::new();
     for component in [
@@ -235,9 +279,6 @@ pub(crate) fn checkpoint_a(root: &Path, dir: &Path) -> Result<Value, String> {
         "sns_swap",
         "sns_archive",
     ] {
-        if manifest.artifact(component, "source_commit") != Some(REWARD_BASELINE) {
-            return Err(format!("{component} source mismatch"));
-        }
         let bytes = fs::read(
             bundle
                 .join("wasms")
@@ -258,7 +299,7 @@ pub(crate) fn checkpoint_a(root: &Path, dir: &Path) -> Result<Value, String> {
     }
     if context["local_fixture"] == false {
         let inputs: Value = read_json(root, &format!("{DIR}/required-inputs.draft.json"))?;
-        if inputs["final_sns_sale_commit"] != REWARD_BASELINE {
+        if inputs["final_sns_sale_commit"] != approved_sns_source() {
             return Err("deployment sale source differs from verified pinned source".into());
         }
         for component in ["governance", "root", "ledger", "index", "swap", "archive"] {
@@ -328,20 +369,11 @@ pub(crate) fn checkpoint_a(root: &Path, dir: &Path) -> Result<Value, String> {
         parser.parent().ok_or("parser has no parent")?,
         "build-inputs.json",
     )?;
-    if binding["ic_commit"] != REWARD_BASELINE
-        || binding["ic_dirty"] != false
-        || binding["adapter_sha256"]
-            != hex::encode(Sha256::digest(
-                fs::read(root.join("tools/acceptance/sns_payloads.rs"))
-                    .map_err(|e| e.to_string())?,
-            ))
-        || binding["binary_sha256"]
-            != hex::encode(Sha256::digest(
-                fs::read(&parser).map_err(|e| e.to_string())?,
-            ))
-    {
-        return Err("pinned parser byte/source binding mismatch".into());
-    }
+    validate_parser_binding(
+        &binding,
+        &fs::read(root.join("tools/acceptance/sns_payloads.rs")).map_err(|e| e.to_string())?,
+        &fs::read(&parser).map_err(|e| e.to_string())?,
+    )?;
     let temporary = dir.join(format!("verify-a-{}", std::process::id()));
     fs::create_dir(&temporary).map_err(|e| e.to_string())?;
     let result = (|| {
@@ -390,7 +422,7 @@ pub(crate) fn checkpoint_a(root: &Path, dir: &Path) -> Result<Value, String> {
             }
         }
         Ok(
-            json!({"checkpoint":"A", "local_fixture":context["local_fixture"], "source_commit":REWARD_BASELINE, "artifacts":hashes, "io_artifacts":io_artifacts,
+            json!({"checkpoint":"A", "local_fixture":context["local_fixture"], "source_commit":approved_sns_source(), "artifacts":hashes, "io_artifacts":io_artifacts,
             "post_sale_observations_required":false, "deployment_parameters_approved":context["local_fixture"] == false}),
         )
     })();
@@ -531,6 +563,13 @@ fn validate_io_artifacts(root: &Path, dir: &Path) -> Result<Value, String> {
         {
             return Err(format!("malformed or mismatched raw IO Wasm: {role}"));
         }
+        if role == "frontend" {
+            frontend_assets::validate(
+                Path::new(text(artifact, "browser_assets")?),
+                &bytes,
+                &frontend_assets::acceptance_config(),
+            )?;
+        }
         let did = match role {
             "stream" => "canisters/io_stream_manager/io_stream_manager.did",
             "nns_manager" => "canisters/io_nns_neuron_manager/io_nns_neuron_manager.did",
@@ -604,7 +643,10 @@ fn validate_capitalization(
         || amount(c, "liquid_backing_e8s")? != amount(b, "b0_e8s")?
         || amount(c, "io_total_supply_e8s")? != amount(c, "io_total_supply_before_funding_e8s")?
         || amount(c, "sale_treasury_icp_e8s")? != amount(b, "sale_treasury_retained_icp_e8s")?
-        || amount(c, "dynamic_anchor_seed_e8s")? != DYNAMIC_ANCHOR_E8S
+        // This is the canonical initial funding observation, before bootstrap
+        // or reconciliation consumes fees. Only 10 ICP becomes anchor capacity;
+        // runtime classifies all additional physical principal as surplus.
+        || amount(c, "dynamic_anchor_seed_e8s")? < DYNAMIC_ANCHOR_E8S
     {
         return Err("capitalization, anchor segregation, treasury or no-issuance mismatch".into());
     }
@@ -706,6 +748,88 @@ pub(crate) fn generate_constructors(root: &Path, dir: &Path) -> Result<(), Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn acceptance_source_and_parser_require_the_reviewed_baseline() {
+        let mut source = io_sns_manifest::SnsManifest::parse(&format!(
+            "[variant]\nscope='same-source'\nic_commit='{}'\nsource_tree_clean=true\n[capabilities]\nlatest_reward_event_participation=true\n", approved_sns_source()
+        )).unwrap();
+        for component in ["governance", "root", "ledger", "index", "swap", "archive"] {
+            source
+                .set_artifact(
+                    &format!("sns_{component}"),
+                    "source_commit",
+                    approved_sns_source(),
+                )
+                .unwrap();
+            source
+                .set_value(
+                    "contract",
+                    &format!("{component}_did_sha256"),
+                    "a".repeat(64),
+                )
+                .unwrap();
+        }
+        validate_sns_source(&source).unwrap();
+        for (section, key, value) in [
+            ("variant", "ic_commit", "0".repeat(40)),
+            ("variant", "source_tree_clean", "false".into()),
+            (
+                "capabilities",
+                "latest_reward_event_participation",
+                "false".into(),
+            ),
+        ] {
+            let mut bad = source.clone();
+            bad.set_value(section, key, value).unwrap();
+            assert!(validate_sns_source(&bad).is_err());
+        }
+        for component in ["governance", "root", "ledger", "index", "swap", "archive"] {
+            let mut bad = source.clone();
+            bad.set_artifact(&format!("sns_{component}"), "source_commit", "0".repeat(40))
+                .unwrap();
+            assert!(
+                validate_sns_source(&bad).is_err(),
+                "mixed {component} source accepted"
+            );
+        }
+        let adapter = b"component adapter";
+        let binary = b"component binary";
+        let binding = json!({"ic_commit":approved_sns_source(),"ic_dirty":false,
+            "friendly_parser_sha256":approved_sns_baseline()["friendly_parser_sha256"],
+            "adapter_sha256":hex::encode(Sha256::digest(adapter)),"binary_sha256":hex::encode(Sha256::digest(binary))});
+        validate_parser_binding(&binding, adapter, binary).unwrap();
+        for key in [
+            "ic_commit",
+            "friendly_parser_sha256",
+            "adapter_sha256",
+            "binary_sha256",
+        ] {
+            let mut bad = binding.clone();
+            bad[key] = json!("0".repeat(64));
+            assert!(
+                validate_parser_binding(&bad, adapter, binary).is_err(),
+                "accepted {key}"
+            );
+        }
+        let mut bad = binding.clone();
+        bad["ic_dirty"] = json!(true);
+        assert!(validate_parser_binding(&bad, adapter, binary).is_err());
+        // Matching untrusted declarations do not promote a revision to approval.
+        let mut bad_source = source.clone();
+        bad_source
+            .set_value("variant", "ic_commit", "0".repeat(40))
+            .unwrap();
+        for component in ["governance", "root", "ledger", "index", "swap", "archive"] {
+            bad_source
+                .set_artifact(&format!("sns_{component}"), "source_commit", "0".repeat(40))
+                .unwrap();
+        }
+        bad["ic_commit"] = json!("0".repeat(40));
+        bad["ic_dirty"] = json!(false);
+        assert!(validate_sns_source(&bad_source).is_err());
+        assert!(validate_parser_binding(&bad, adapter, binary).is_err());
+    }
+
     #[test]
     fn acceptance_context_component_requires_frozen_roles_and_explicit_real_metadata() {
         // Synthetic component inputs only; this is not deployment approval or A evidence.
@@ -818,6 +942,15 @@ mod tests {
                 "initial_voting_period_seconds":86_400,"wait_for_quiet_deadline_increase_seconds":43_200,"voting_rewards_parameters":{
                     "round_duration_seconds":86_400,"reward_rate_transition_duration_seconds":0,"initial_reward_rate_basis_points":0,"final_reward_rate_basis_points":0}}});
         validate_capitalization(Path::new("."), &context, &b, &c).unwrap();
+        for seed in [999_999_999_u64, 1_000_000_000, 1_000_000_001, 6_000_000_000] {
+            let mut funded = c.clone();
+            funded["dynamic_anchor_seed_e8s"] = json!(seed);
+            assert_eq!(
+                validate_capitalization(Path::new("."), &context, &b, &funded).is_ok(),
+                seed >= 1_000_000_000,
+                "initial seed {seed}"
+            );
+        }
         for (pointer,replacement) in [("/permanent_controller",json!(operator)),("/permanent_dissolve_delay_seconds",json!(63_115_199)),
             ("/permanent_cached_stake_after_refresh_e8s",json!(2_299_986_666u64)),("/refresh_succeeded",json!(false)),
             ("/dynamic_anchor_seed_e8s",json!(0)),("/liquid_backing_e8s",json!(0)),

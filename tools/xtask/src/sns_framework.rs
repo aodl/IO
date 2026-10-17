@@ -2083,7 +2083,7 @@ pub(crate) fn validate_bundle(root: &Path) -> Result<(), String> {
     verify_sha256sums(root)
 }
 
-fn verify_candidate_did(text: &str) -> Result<(), String> {
+pub(crate) fn verify_candidate_did(text: &str) -> Result<(), String> {
     for required in [
         "type RewardEventParticipation = record",
         "reward_event_end_timestamp_seconds : opt nat64",

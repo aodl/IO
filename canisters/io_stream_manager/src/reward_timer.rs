@@ -165,6 +165,23 @@ pub(crate) fn install(deadline_seconds: Option<u64>) {
             crate::redemption_timer::install_normal();
             return;
         }
+        // Observation cannot run while its durable TopUp occupies the slot.
+        // Continue that same operation before observing another checkpoint.
+        if matches!(
+            &state.active_operation,
+            Some(crate::state::StreamOperation::PoolTopUp(_))
+        ) {
+            let result = crate::api::resume_stream(ic_cdk::api::time()).await;
+            if let Err(error) = &result {
+                ic_cdk::api::debug_print(format!("structural TopUp remains pending: {error:?}"));
+            }
+            if result.is_err() || crate::state::read().active_operation.is_some() {
+                install_retry();
+            } else {
+                install_for_ready_state();
+            }
+            return;
+        }
         let now_nanos = ic_cdk::api::time();
         let now_seconds = now_nanos / 1_000_000_000;
         if state

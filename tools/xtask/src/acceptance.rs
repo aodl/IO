@@ -1,5 +1,7 @@
 pub(crate) mod checkpoints;
 mod constructors;
+#[path = "../../acceptance/frontend_assets.rs"]
+mod frontend_assets;
 mod observations;
 use candid::Principal;
 use io_core_model::{Backing, EconomicState, ReconcilePlan};
@@ -31,7 +33,22 @@ const JUPITER_GOVERNANCE_MEMO: u64 = 0x494f_4a55_5030_3031; // IOJUP001
 const RESERVE_MEMO: u64 = 0x494f_5245_5330_3031; // IORES001
 const SALE_MEMO_START: u64 = 1_000_000;
 const SALE_MEMO_END: u64 = 10_000_000;
-const REWARD_BASELINE: &str = "fcc281f7200a8d3192ec46c225b436b2096bbf58";
+// The reviewed repository baseline is the approval boundary, not an input from
+// an evidence directory. Changing it requires source review and recompilation.
+fn approved_sns_baseline() -> &'static Value {
+    static BASELINE: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
+        serde_json::from_str(include_str!(
+            "../../../deploy/acceptance/sns-source-baseline.json"
+        ))
+        .expect("reviewed SNS baseline JSON")
+    });
+    &BASELINE
+}
+fn approved_sns_source() -> &'static str {
+    approved_sns_baseline()["commit"]
+        .as_str()
+        .expect("reviewed SNS commit")
+}
 const PRODUCTION_JUPITER_SNS_REWARDS_CANISTER_ID: &str = "alk7f-5aaaa-aaaar-qb4ra-cai";
 const STREAM_RESERVE_SUBACCOUNT: [u8; 32] =
     hex_literal("781a5fc2d878692d1fa555359c190f96d61f85b392cf11b80f4666169d789027");
@@ -654,7 +671,7 @@ fn validate_manifest(manifest: &AcceptanceManifest) -> Result<(), String> {
         ("historian", "gaqmf-jaaaa-aaaas-amxva-cai"),
         ("frontend", "ghrkr-eyaaa-aaaas-amxvq-cai"),
     ]);
-    if manifest.reward_share_baseline_commit != REWARD_BASELINE {
+    if manifest.reward_share_baseline_commit != approved_sns_source() {
         return Err("acceptance reward-share baseline commit changed".into());
     }
     if manifest.roles.len() != expected.len() {
@@ -1292,7 +1309,7 @@ fn validate_static_artifacts(root: &Path, sealed: bool) -> Result<(), String> {
         }
     }
     let baseline: Value = read_json(root, &format!("{DIR}/sns-source-baseline.json"))?;
-    if baseline["commit"] != REWARD_BASELINE
+    if baseline["commit"] != approved_sns_source()
         || baseline["reward_event_participation_candid"]["reward_event_end_timestamp_seconds"]
             != "opt nat64"
         || baseline["reward_event_participation_candid"]["reward_shares"] != "opt nat"

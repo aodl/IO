@@ -3,7 +3,7 @@ use ic_http_certification::{HttpRequest, HttpResponse, Method, StatusCode};
 use include_dir::{include_dir, Dir};
 use std::cell::RefCell;
 
-static ASSETS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/public");
+static ASSETS: Dir<'_> = include_dir!("$IO_FRONTEND_PUBLIC_DIR");
 
 const NO_CACHE: &str = "public, no-cache, no-store";
 const IMMUTABLE: &str = "public, max-age=31536000, immutable";
@@ -333,7 +333,7 @@ mod tests {
         let end = index[start..].find(".js").expect("bundle suffix") + start + 3;
         let bundle_path = &index[start..end];
         let response = get(bundle_path);
-        let generated_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("public/generated");
+        let generated_dir = Path::new(env!("IO_FRONTEND_PUBLIC_DIR")).join("generated");
         let bundle_manifest = generated_dir.join("frontend-bundle.json");
 
         if !bundle_manifest.exists() {
