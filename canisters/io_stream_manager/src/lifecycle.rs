@@ -146,23 +146,6 @@ pub(crate) fn validate_installed_governance(
     Ok(())
 }
 
-pub fn begin_control_request() -> Result<u64, String> {
-    let mut state = state::read();
-    state.control_epoch = state
-        .control_epoch
-        .checked_add(1)
-        .ok_or("control epoch overflow")?;
-    let epoch = state.control_epoch;
-    state::write(state);
-    Ok(epoch)
-}
-
-pub fn set_paused() {
-    let mut state = state::read();
-    state.lifecycle = Lifecycle::Paused;
-    state::write(state);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -77,8 +77,10 @@ per-flow bounded-work limit.
 
 The NNS manager owns governance proof. Jupiter and two-week sending staging accounts each have their own bounded pre-funded fee float. Two-year maturity and ready unwind principal go directly to the stream liquid account and issue no IO. Never add a general fee ledger, generic monetary scanner, or stream-side governance proof. The one Stream redemption scanner is restricted to its fixed semantic Account and requires canonical proof before value movement.
 
-New NNS work requires Ready after the zero-maturity baseline and exact target
-reconciliation. Post-upgrade remains Paused, while already immutable unwind,
+New NNS work requires Ready after validation of the permanent configuration,
+controller and audited principal plus exact target reconciliation. Ordinary and
+staked maturity need not be zero and are not claim backing. Post-upgrade reopens
+Paused, while already immutable unwind,
 maturity, outgoing-transfer and receipt work resumes through its typed evidence.
 The semantic maturity staging Account is controlled-value authority; callers do
 not supply upstream Mint evidence.

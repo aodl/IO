@@ -1,0 +1,73 @@
+{
+  "schema": "io.acceptance.funding.v1",
+  "canonical_claim_supply_c0": "ledger_total_supply_e8s - stream_reserve_balance_e8s - sum(explicit_excluded_balances_e8s)",
+  "stream_claim_backing_target_e8s": "C0",
+  "stream_claim_backing_transfer_e8s": "C0 - canonically observed pre-funding B",
+  "additional_permanent_capital_exact": "2 * C0 / 3 ICP",
+  "additional_permanent_capital_transfer_e8s": "ceil(2 * C0 / 3)",
+  "jupiter_governance_allocation_e8s": 10000000000000000,
+  "jupiter_governance_allocation_funding_effect": "zero: exact staking Account is explicitly excluded from C, B, active stake, Dynamic target, and reward economics",
+  "permanent_rounding_policy": "round upward to a whole e8; report 0, 1/3, or 2/3 e8 excess over the exact target",
+  "dynamic_anchor_e8s": 1000000000,
+  "standalone_semantic_fee_float_e8s": 0,
+  "expected_canonical_icp_fee_e8s": 10000,
+  "expected_canonical_io_fee_e8s": 10000,
+  "funding_actions": [
+    {
+      "account": "stream_liquid_icp",
+      "purpose": "initial claim backing B",
+      "minimum_required_e8s": "C0 - canonically observed pre-funding B",
+      "prefunded_fee_count": 0,
+      "replenishable": true,
+      "economic_classification": "claim backing"
+    },
+    {
+      "account": "nns_permanent_neuron_stake",
+      "purpose": "operator-funded permanent-capital increment after verified baseline",
+      "minimum_required_e8s": "ceil(2 * C0 / 3)",
+      "prefunded_fee_count": 0,
+      "replenishable": true,
+      "economic_classification": "new permanent protocol capital delta K; not claim backing"
+    },
+    {
+      "account": "nns_dynamic_parent_stake",
+      "purpose": "Dynamic parent bootstrap and NNS/ICP fee capacity",
+      "minimum_required_e8s": 1000000000,
+      "prefunded_fee_count": 100000,
+      "replenishable": true,
+      "economic_classification": "independent Dynamic anchor capital; not B or permanent delta K"
+    },
+    {
+      "account": "nns_jupiter_staging",
+      "purpose": "Jupiter durable staging",
+      "minimum_required_e8s": 0,
+      "prefunded_fee_count": 0,
+      "replenishable": true,
+      "economic_classification": "operation gross funds its own delivery fee"
+    },
+    {
+      "account": "nns_two_year_maturity_staging",
+      "purpose": "TwoYear maturity durable staging",
+      "minimum_required_e8s": 0,
+      "prefunded_fee_count": 0,
+      "replenishable": true,
+      "economic_classification": "operation gross funds its own delivery fee"
+    },
+    {
+      "account": "nns_two_week_maturity_staging",
+      "purpose": "TwoWeek maturity durable staging",
+      "minimum_required_e8s": 0,
+      "prefunded_fee_count": 0,
+      "replenishable": true,
+      "economic_classification": "operation gross funds its own delivery fee"
+    },
+    {
+      "account": "stream_redemption_staging",
+      "purpose": "redemption durable staging",
+      "minimum_required_e8s": 0,
+      "prefunded_fee_count": 0,
+      "replenishable": true,
+      "economic_classification": "redemption quote charges its payout fee"
+    }
+  ]
+}

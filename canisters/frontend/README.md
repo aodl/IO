@@ -129,6 +129,18 @@ release` builds the browser bundle before compiling Wasm so the recorded asset
 canister embeds the stamped files. See the [xtask guide](../../tools/xtask/README.md)
 for aggregate frontend/release gates.
 
+For acceptance artifact verification, use
+`bash tools/acceptance/build-frontend ABSOLUTE_NEW_OUTPUT_DIRECTORY`. This wrapper
+supplies explicit acceptance IDs, network `ic` and demo `false`, and invokes the
+same browser builder before the offline Rust release build. Both builders use
+the isolated `IO_FRONTEND_PUBLIC_DIR`; the default remains `public/`. Keep the
+output and set `IO_ACCEPTANCE_FRONTEND_BUILD_DIR` for the frontend PocketIC test.
+That test compares served HTML and referenced JS bytes with the generated files
+and requires the private manifest to remain unavailable. The acceptance
+checkpoint additionally binds executable config, manifest/content hashes and
+embedded assets to the exact install Wasm. This local check is not final browser
+build approval and does not issue browser requests to the configured canisters.
+
 ## Deployment status
 
 The production frontend reservation remains pre-launch and does not activate

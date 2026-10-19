@@ -1,0 +1,61 @@
+{
+  "schema": "io.acceptance.genesis-neurons.v1",
+  "operator_controller": "TBD_GENESIS_CONTROLLER_PRINCIPAL",
+  "sale_reserved_memo_range_inclusive": [1000000, 10000000],
+  "neurons": [
+    {
+      "name": "governance",
+      "memo": 5282519294002868273,
+      "memo_domain": "IOGOV001",
+      "stake_e8s": 3000000000,
+      "dissolve_delay_seconds": 1296060,
+      "vesting_period_seconds": 0,
+      "claim_bearing": true,
+      "stream_excluded": false,
+      "reward_policy": "eligible only while non-dissolving at the exact 1296060-second IO user delay and otherwise satisfying event participation rules"
+    },
+    {
+      "name": "jupiter-governance-only",
+      "controller": "TBD_ACCEPTANCE_JUPITER_SNS_REWARDS_CANISTER_ID",
+      "ledger_account_owner": "h7y7s-kyaaa-aaaas-amxrq-cai",
+      "memo": 5282522618206892081,
+      "memo_domain": "IOJUP001",
+      "stake_e8s": 10000000000000000,
+      "dissolve_delay_seconds": 1296060,
+      "vesting_period_seconds": 0,
+      "claim_bearing": false,
+      "stream_excluded": true,
+      "io_reward_policy": "no credits, recipient entry, or denominator weight",
+      "sns_voting_power": "100% developer multiplier because initial_swap_amount_e8s equals total_swap_amount_e8s",
+      "custody": "must remain staked and receive only the permissions needed by the separately implemented Jupiter voting mirror"
+    },
+    {
+      "name": "reserve-transport",
+      "memo": 5282531345630769201,
+      "memo_domain": "IORES001",
+      "stake_e8s": "TOTAL_SUPPLY_E8S - 3000000000 - 10000000000000000 - SALE_IO_ALLOCATION_E8S",
+      "dissolve_delay_seconds": 0,
+      "vesting_period_seconds": 0,
+      "claim_bearing": false,
+      "stream_excluded": true,
+      "post_successful_sale_state_required": "Dissolved and normally disbursable under Governance Normal"
+    }
+  ],
+  "initial_swap_io_allocation_e8s": "TBD_ACCEPTANCE_SALE_IO_ALLOCATION_E8S",
+  "jupiter_staking_account_derivations": {
+    "acceptance": {
+      "owner": "h7y7s-kyaaa-aaaas-amxrq-cai",
+      "controller": "TBD_ACCEPTANCE_JUPITER_SNS_REWARDS_CANISTER_ID",
+      "memo": 5282522618206892081,
+      "subaccount_hex": "TBD_DERIVED_AFTER_JUPITER_SNS_REWARDS_MEMO_5282522618206892081"
+    },
+    "production": {
+      "owner": null,
+      "owner_source": "future frozen production SNS Governance role; production Account remains intentionally incomplete until that role is assigned",
+      "controller": "alk7f-5aaaa-aaaar-qb4ra-cai",
+      "memo": 5282522618206892081,
+      "subaccount_hex": "7ad7034691f63c7f831a919cde4a7960de689e842d4aa256f1b0c6623c8da0a7"
+    }
+  },
+  "sum_invariant": "3000000000 + 10000000000000000 + reserve_transport_stake_e8s + initial_swap_io_allocation_e8s = 100000000000000000"
+}

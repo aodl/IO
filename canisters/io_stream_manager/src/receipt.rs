@@ -844,6 +844,30 @@ mod tests {
     }
 
     #[test]
+    fn jupiter_receipt_bootstraps_despite_preexisting_dust_backing() {
+        let (_, state) = crate::state::tests::valid_state();
+        let snapshot = crate::redemption::ClaimSnapshot {
+            total_supply_e8s: 1_000,
+            reserve_io_e8s: 1_000,
+            claim_supply_e8s: 0,
+            total_claim_backing_e8s: 5,
+            io_fee_e8s: 10,
+            ..Default::default()
+        };
+        let request = PrepareClaimBackingReceiptArgs {
+            nns_operation_sequence: 1,
+            kind: ClaimBackingReceiptKind::Jupiter,
+            net_liquid_credit_e8s: 100,
+        };
+        let (recipients, entitlement_generation) =
+            plan_recipients(&state, &request, &snapshot, 5).unwrap();
+        assert_eq!(entitlement_generation, None);
+        assert_eq!(recipients.len(), 1);
+        assert_eq!(recipients[0].destination, state.config.jupiter_io_account);
+        assert_eq!(recipients[0].io_e8s, 100);
+    }
+
+    #[test]
     fn jupiter_and_two_week_share_rate_one_and_rate_two_backed_issuance() {
         let (_, mut state) = crate::state::tests::valid_state();
         state.pending_entitlement_batch = Some(crate::state::PendingEntitlementBatch {

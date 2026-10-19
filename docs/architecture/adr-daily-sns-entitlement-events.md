@@ -22,9 +22,12 @@ For an event whose `settled_proposals` list is nonempty, each currently
 eligible ordinary IO SNS neuron receives a fraction of one fixed daily policy
 opportunity.
 IO first sums the canonical `reward_shares` tagged with that event's exact end
-timestamp across every neuron, including excluded or currently ineligible
-neurons. An absent or stale field contributes zero. A current-event
-participation field without its `Uint128` value fails closed. The eligible
+timestamp across every neuron except an exact staking Account in Stream's
+explicit economic-exclusion list. Ordinary claim-bearing neurons that are
+currently ineligible for IO rewards remain in this denominator. An absent or
+stale field contributes zero. A current-event
+participation field without its Candid `nat` value fails closed. Conversion to
+IO's internal `u128` accounting is checked; values above `u128::MAX` fail closed. The eligible
 credit is then:
 
 ```text
@@ -35,7 +38,12 @@ credit_i = floor(DAILY_EVENT_CREDIT * neuron_reward_shares_i
 where `DAILY_EVENT_CREDIT = 1,000,000,000,000,000,000`. The shares already
 encode canonical ballot voting power across the proposals settled in the
 event; IO does not reconstruct ballots or multiply them by a second
-participation ratio. A proposal-bearing event with zero canonical shares
+participation ratio. This narrow Account filter gives governance-only protocol
+stake zero IO economic weight without altering SNS ballots or voting power.
+Whether such a neuron abstains, votes Yes, or votes No cannot dilute ordinary
+IO credits. A proposal-bearing event with only excluded participation still
+has a nonempty canonical proposal list, assigns no IO credit, and never becomes
+a no-proposal fallback event. A proposal-bearing event with zero included shares
 assigns no eligible credit, forfeits its complete daily opportunity and does
 not use a stake fallback.
 

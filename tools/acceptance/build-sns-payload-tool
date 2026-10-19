@@ -1,0 +1,72 @@
+#!/usr/bin/env python3
+"""Build the pinned SNS CLI, then link the offline adapter against its dependencies.
+
+Requires approval for public build-input downloads. Source checkout and identities
+are read-only. The caller supplies an external output directory.
+"""
+import hashlib
+import json
+import os
+import pathlib
+import subprocess
+import sys
+
+if len(sys.argv) != 3:
+    sys.exit('usage: build-sns-payload-tool IC_CHECKOUT OUTPUT_DIRECTORY')
+ic = pathlib.Path(sys.argv[1]).resolve()
+out = pathlib.Path(sys.argv[2]).resolve()
+baseline = pathlib.Path(__file__).resolve().parents[2] / 'deploy/acceptance/sns-source-baseline.json'
+pin = json.loads(baseline.read_text())['parser']['commit']
+head = subprocess.check_output(['git', '-C', str(ic), 'rev-parse', 'HEAD'], text=True).strip()
+if head != pin or subprocess.check_output(['git', '-C', str(ic), 'status', '--porcelain']):
+    sys.exit('requires the clean pinned IC source')
+if out.exists():
+    sys.exit('output directory already exists')
+# Reuse the repository's filtered build configuration convention. All generated
+# configuration and cache output is outside the IC source checkout.
+cache_root = pathlib.Path(os.environ.get('IO_SNS_CACHE_DIR', str(pathlib.Path(os.environ.get('XDG_CACHE_HOME', str(pathlib.Path.home() / '.cache'))) / 'io/sns-framework')))
+cache = cache_root / 'bazel'
+cache.mkdir(parents=True, exist_ok=True)
+zig = cache / 'zig-cache'
+zig.mkdir(exist_ok=True)
+rc_text = '\n'.join(line for line in (ic / 'bazel/conf/.bazelrc.build').read_text().splitlines() if '/tmp/zig-cache' not in line)
+rc_text += f'\nbuild --repo_env=HERMETIC_CC_TOOLCHAIN_CACHE_PREFIX={zig}\nbuild --sandbox_add_mount_pair={zig}\nbuild --sandbox_writable_path={zig}\n'
+override = os.environ.get('IO_ACCEPTANCE_BAZELRC')
+if override:
+    rc = pathlib.Path(override).resolve()
+    if ic == rc or ic in rc.parents or not rc.is_file():
+        sys.exit('Bazel configuration override must be an existing external build input')
+else:
+    rc = cache / 'acceptance-pinned.bazelrc'
+    rc.write_text(rc_text)
+subprocess.run(['bazelisk', '--batch', '--nosystem_rc', '--nohome_rc', '--noworkspace_rc',
+                f'--bazelrc={rc}', 'build', '--jobs=2',
+                '--action_env=PATH=/home/codexdev/.local/bin:/usr/bin:/bin',
+                '//rs/sns/cli:sns'], cwd=ic, check=True)
+params = (ic / 'bazel-bin/rs/sns/cli/sns-0.params').read_text().splitlines()
+execroot = (ic / 'bazel-out').resolve().parent
+sysroot = next(x.split('=', 1)[1] for x in params if x.startswith('--sysroot='))
+rustc = execroot / sysroot / 'bin/rustc'
+# Reuse only dependency and native-link inputs, not upstream output locations.
+flags = [x for x in params if x.startswith(('--extern=', '-Ldependency=', '-Lnative=', '--sysroot='))]
+friendly = ic / 'rs/sns/cli/src/init_config_file/friendly.rs'
+source = pathlib.Path(__file__).resolve().with_name('sns_payloads.rs')
+out.mkdir(parents=True)
+wrapper = out / 'main.rs'
+wrapper.write_text('#[path = ' + json.dumps(str(friendly)) + ']\nmod friendly;\n' + source.read_text())
+subprocess.run([str(rustc), str(wrapper), '--edition=2024', '--crate-name=io_sns_payloads',
+                '-C', 'opt-level=1', '-o', str(out / 'sns-payloads'), *flags], cwd=execroot, check=True)
+if subprocess.check_output(['git', '-C', str(ic), 'rev-parse', 'HEAD'], text=True).strip() != pin or subprocess.check_output(['git', '-C', str(ic), 'status', '--porcelain']):
+    sys.exit('IC source changed during parser build')
+sha = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
+(out / 'build-inputs.json').write_text(json.dumps({
+    'ic_commit': head, 'ic_dirty': False,
+    'friendly_parser_sha256': sha(friendly), 'adapter_sha256': sha(source),
+    'binary_sha256': sha(out / 'sns-payloads'),
+    'dependency_binding': 'successful pinned Bazel CLI build in this invocation',
+    'bazelrc_path': str(rc), 'bazelrc_sha256': sha(rc),
+    'bazelrc_override': bool(override),
+    'cli_sha256': sha(ic / 'bazel-bin/rs/sns/cli/sns'),
+    'cli_compile_parameters_sha256': sha(ic / 'bazel-bin/rs/sns/cli/sns-0.params')
+}, indent=2) + '\n')
+print(out / 'sns-payloads')

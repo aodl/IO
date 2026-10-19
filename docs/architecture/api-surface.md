@@ -1,8 +1,8 @@
 # Production API surface
 
 Stream exposes narrow redemption/resume/proof, unified claim-receipt,
-reward-observation/backing, lifecycle, and status methods. NNS exposes narrow
-Jupiter, maturity, pooled reconciliation, resume/proof, lifecycle, status, and
+reward-observation/backing, and status methods. NNS exposes narrow
+Jupiter, Stream-bound two-week maturity, pooled reconciliation, resume/proof, status, and
 claim-backing observation methods. The Stream-only claim-asset and pool-policy
 observations retain their caller authorization. A separate permissionless
 Dynamic-backing status update performs canonical reads and exposes only the
@@ -25,15 +25,11 @@ carries the exact cross-canister permit, while bounded recipient settlement is
 coarse `Pending`. Detailed phase names remain diagnostic status text and are
 not workflow compatibility types.
 
-The validator/update pairs registered as SNS generic functions share payloads
-but have different roles. A validator is a pure, local submission-time
-preflight. The update revalidates at execution time and uses a transport reject
-when an authenticated governance request was not durably accepted, because the
-reviewed SNS implementation treats every normal reply as execution success
-without decoding the target's application-level `Result`. Typed unauthorized
-responses remain part of the ordinary public API. Exact accepted work may
-return `Pending` and continue through the existing permissionless resume
-surface, except that an active Stream redemption requires SNS Governance for
-`resume` or exact proof. Its permissionless fast path is the bounded,
-external-call-free `process_redemptions` wake. No public governance queue or
+Routine IO execution has no SNS generic-function validator/update pairs.
+Install and upgrade timers recover persisted work and revalidate readiness
+automatically. Exact accepted work may return `Pending` and continue through
+the permissionless deterministic resume surface. Stream's rare exact-block
+proof is also caller-independent: the complete persisted transfer intent and
+canonical ledger block determine acceptance. Authority checks remain on calls
+that create new cross-canister economic intent. No public governance queue or
 internal-choreography API is added.

@@ -255,6 +255,7 @@ fn finish_refresh(
     if operation.kind == PoolCommandKind::Bootstrap {
         execution::validate_parent_configuration(
             &observed,
+            ic_cdk::api::canister_self(),
             FollowPolicy {
                 followee_neuron_id: current.config.pooled_parent_followee_id,
             },

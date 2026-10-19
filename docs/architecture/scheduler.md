@@ -37,6 +37,12 @@ The NNS Manager reconstructs one ephemeral one-shot timer from durable facts:
 1. a 60-second retry boundary for an active recoverable operation; or
 2. the earliest passive child's exact `ready_at_seconds`.
 
+A separate volatile seven-day interval offers permanent-neuron ordinary
+maturity to the same existing TwoYear state machine. It has no stable cadence
+state and does not duplicate maturity logic. Active immediate work or a pending
+TwoYear record rejects that opportunity as Busy; unrelated passive TwoWeek or
+non-ready child work does not reserve the slot.
+
 At the ready boundary the manager re-reads canonical Governance state and
 services the oldest ready child through the ordinary exact Disburse/proof path.
 It does not infer success from elapsed time. A safe retry schedules another
@@ -51,11 +57,13 @@ and unresolved ready return supplies natural backpressure. At the selected
 bound of 29 live generations. This is a sizing result, not a public capacity
 branch; historical generations may exceed 32 without `CapacityPending`.
 
-Install and upgrade reopen Paused. Automatic scheduling does not initiate new
-work while Paused. Already accepted recovery work follows its flow-specific
-authorization while Paused; active Stream-redemption `resume` and exact proof
-require SNS Governance. Reviewed Ready reconstructs the next deadline without
-storing a timer ID or duplicate timer timestamp in stable state.
+Install and upgrade reopen Paused. Active accepted work recovers first. Passive
+accepted work remains unchanged while readiness revalidates configuration and
+accounting, so a future maturity or child deadline does not keep the manager
+Paused. Permissionless deterministic resume and exact proof retain their
+flow-specific evidence checks. Ready reconstructs the recovery deadline and
+installs the weekly interval without storing either timer identity or cadence
+in stable state.
 
 ## Timing model
 

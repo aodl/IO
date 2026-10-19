@@ -9,6 +9,7 @@ pub struct MockNeuron {
     pub account: Vec<u8>,
     pub principal_e8s: u128,
     pub maturity_e8s: u128,
+    pub staked_maturity_e8s: u128,
     pub dissolve_delay_seconds: u64,
     pub is_dissolving: bool,
     pub dissolve_started_at_seconds: Option<u64>,
@@ -330,6 +331,48 @@ pub fn debug_set_pooled_principal(pooled_principal_e8s: u128) {
         state.anchor_available_e8s = io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S;
         state.live_cohort = None;
     });
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_reflect_reconciled_pooled_target(target_e8s: u128) -> Result<(), String> {
+    STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        let total_dynamic = state
+            .pooled_principal_e8s
+            .checked_add(
+                state
+                    .live_cohort
+                    .as_ref()
+                    .map_or(0, |cohort| cohort.net_backing_e8s),
+            )
+            .ok_or_else(|| "mock Dynamic backing overflow".to_string())?;
+        let remaining = total_dynamic
+            .checked_sub(target_e8s)
+            .ok_or_else(|| "mock reconciled target exceeds Dynamic backing".to_string())?;
+        state.pooled_principal_e8s = target_e8s;
+        if remaining == 0 {
+            state.live_cohort = None;
+        } else if let Some(cohort) = state.live_cohort.as_mut() {
+            cohort.net_backing_e8s = remaining;
+            cohort.physical_principal_e8s = remaining
+                .checked_add(cohort.committed_fee_e8s)
+                .ok_or_else(|| "mock cohort principal overflow".to_string())?;
+        } else {
+            state.live_cohort = Some(io_nns_types::backing::CohortObservation {
+                generation: 1,
+                child_neuron_id: 10_001,
+                physical_principal_e8s: remaining
+                    .checked_add(10_000)
+                    .ok_or_else(|| "mock cohort principal overflow".to_string())?,
+                net_backing_e8s: remaining,
+                committed_fee_e8s: 10_000,
+                ready_at_seconds: canonical_now_seconds(&state)
+                    .saturating_add(io_nns_types::backing::NNS_DYNAMIC_DISSOLVE_DELAY_SECONDS),
+                proof: io_nns_types::backing::CohortProofState::Dissolving,
+            });
+        }
+        Ok(())
+    })
 }
 
 #[cfg_attr(target_family = "wasm", ic_cdk::update)]
@@ -721,6 +764,7 @@ fn split_response(
             .unwrap_or_else(|| default_neuron_account(child_id)),
         principal_e8s: gross.saturating_sub(10_000),
         maturity_e8s: 0,
+        staked_maturity_e8s: 0,
         dissolve_delay_seconds: delay,
         is_dissolving: false,
         dissolve_started_at_seconds: None,
@@ -822,6 +866,7 @@ pub fn manage_neuron(request: ManageNeuron) -> ManageNeuronResponse {
                                     account,
                                     principal_e8s: io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S,
                                     maturity_e8s: 0,
+                                    staked_maturity_e8s: 0,
                                     dissolve_delay_seconds: 604_800,
                                     is_dissolving: false,
                                     dissolve_started_at_seconds: None,
@@ -919,7 +964,9 @@ fn full_neuron(neuron: &MockNeuron) -> FullNeuron {
         account: neuron.account.clone(),
         cached_neuron_stake_e8s: neuron.principal_e8s.try_into().unwrap_or(u64::MAX),
         maturity_e8s_equivalent: neuron.maturity_e8s.try_into().unwrap_or(u64::MAX),
-        staked_maturity_e8s_equivalent: Some(0),
+        staked_maturity_e8s_equivalent: Some(
+            neuron.staked_maturity_e8s.try_into().unwrap_or(u64::MAX),
+        ),
         auto_stake_maturity: Some(false),
         maturity_disbursements_in_progress: Some(neuron.maturity_disbursements.clone()),
         dissolve_state: Some(if neuron.is_dissolving {
@@ -1116,6 +1163,7 @@ pub fn debug_create_neuron(args: CreateNeuronArgs) -> u64 {
             account: default_neuron_account(args.neuron_id),
             principal_e8s: args.principal_e8s,
             maturity_e8s: 0,
+            staked_maturity_e8s: 0,
             dissolve_delay_seconds: args.dissolve_delay_seconds,
             is_dissolving: false,
             dissolve_started_at_seconds: None,
@@ -1138,6 +1186,7 @@ pub fn debug_create_staking_neuron(args: CreateStakingNeuronArgs) -> u64 {
             account: staking_subaccount(controller, args.memo),
             principal_e8s: args.principal_e8s,
             maturity_e8s: 0,
+            staked_maturity_e8s: 0,
             dissolve_delay_seconds: args.dissolve_delay_seconds,
             is_dissolving: false,
             dissolve_started_at_seconds: None,
@@ -1160,6 +1209,7 @@ pub fn debug_create_split_child(args: CreateSplitChildArgs) -> u64 {
             account: split_child_subaccount(controller, args.memo),
             principal_e8s: args.principal_e8s,
             maturity_e8s: 0,
+            staked_maturity_e8s: 0,
             dissolve_delay_seconds: args.dissolve_delay_seconds,
             is_dissolving: false,
             dissolve_started_at_seconds: None,
@@ -1180,6 +1230,27 @@ pub fn debug_add_maturity(args: NeuronAmountArgs) -> Result<u128, String> {
         let neuron = neuron_mut(&mut state, args.neuron_id)?;
         neuron.maturity_e8s = neuron.maturity_e8s.saturating_add(args.amount_e8s);
         Ok(neuron.maturity_e8s)
+    })
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_set_staked_maturity(args: NeuronAmountArgs) -> Result<(), String> {
+    STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        neuron_mut(&mut state, args.neuron_id)?.staked_maturity_e8s = args.amount_e8s;
+        Ok(())
+    })
+}
+
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub fn debug_clear_maturity_disbursements(args: NeuronIdArgs) -> Result<u64, String> {
+    STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        let disbursements = &mut neuron_mut(&mut state, args.neuron_id)?.maturity_disbursements;
+        let count = u64::try_from(disbursements.len())
+            .map_err(|_| "maturity disbursement count exceeds u64".to_string())?;
+        disbursements.clear();
+        Ok(count)
     })
 }
 
@@ -1236,6 +1307,7 @@ pub fn debug_split(neuron_id: u64, amount_e8s: u128) -> Result<u64, String> {
             account: default_neuron_account(child_id),
             principal_e8s: amount_e8s,
             maturity_e8s: 0,
+            staked_maturity_e8s: 0,
             dissolve_delay_seconds,
             is_dissolving: false,
             dissolve_started_at_seconds: None,

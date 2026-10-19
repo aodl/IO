@@ -14,6 +14,11 @@ issues no IO. Production identifies it as neuron
 operationally expected to follow alpha-vote neuron `2_947_465_672_511_369`.
 This remains subject to separately authorized mainnet verification; this
 component never changes the permanent neuron's followees.
+Readiness verifies that this manager is the controller and that no maturity
+disbursement is already in progress. Pre-existing ordinary maturity and staked
+maturity are permitted observations: neither enters claim backing or changes
+the audited principal, and existing staked maturity is left untouched.
+`auto_stake_maturity` remains disabled.
 
 The Dynamic parent must exist before Ready. Production memo `0` is solely its
 fixed deterministic NNS staking nonce and carries no application metadata.
@@ -64,10 +69,10 @@ Stream-to-Dynamic top-up and the sticky Split plus future child-disbursement
 commitment. Jupiter, TwoWeek maturity, and ordinary TwoYear delivery are fresh
 value; their fees reduce their fresh net credits and do not consume anchor.
 
-Production methods cover Jupiter notify, maturity start/prepare/resume,
-pooled reconciliation/resume/proof, claim-backing observation, lifecycle, and
-status. Callers cannot choose a neuron, destination, amount, memo, followee, or
-vote. The daily pool-policy observation makes independent best-effort
+Production methods cover Jupiter notify, Stream-bound two-week maturity
+preparation, pooled reconciliation, deterministic resume/proof, claim-backing
+observation, and status. Callers cannot choose a neuron, destination, amount,
+memo, followee, or vote. The daily pool-policy observation makes independent best-effort
 `RefreshVotingPower` attempts for the permanent neuron and Dynamic parent.
 Either attempt may fail without blocking the other or any
 monetary path. Neither changes followees, and there is no extra scheduler.
@@ -80,19 +85,16 @@ verified delay/follow/auto-stake policy needed for operational status and
 release evidence. It creates no permit, performs no monetary effect, and adds
 no stable state.
 
-SNS custom-proposal validation is a pure submission-time preflight, not a
-reservation of the single immediate-operation slot. Execution revalidates
-Ready lifecycle, the launch baseline, local idleness, pending two-year work,
-and the canonical protected neuron. The reviewed SNS Governance execution path
-counts any normal target reply as success without interpreting the target's
-Candid `Result`; therefore `start_maturity` and lifecycle control reject at the
-transport boundary when an SNS request has not been durably accepted. An
-active Pool remains intact and is never preempted. Once exact TwoYear work is
-persisted, later `Pending` is normal recoverable continuation. A configuration
-contradiction that deliberately commits Paused returns its typed error so the
-safety state is not rolled back. This uses the existing operation sequence,
-active operation, passive maturity, and lifecycle fields—there is no governance
-queue or second monetary slot.
+Install and upgrade schedule automatic readiness while internally Paused.
+Known durable work is recovered first; readiness then revalidates the permanent
+neuron, Dynamic parent, fees, and accounting before entering Ready. An invalid
+or transient observation stays fail-closed and is retried without a governance
+resume action. Once Ready, a separate volatile interval creates one weekly
+opportunity, exactly 604800 seconds later, to start the existing TwoYear
+maturity state machine when ordinary maturity meets its minimum threshold.
+Active work and a pending TwoYear record block duplication; passive TwoWeek
+maturity and non-ready unwind children do not reserve the immediate slot. There
+is no governance queue, persistent cadence state, or second monetary slot.
 
 Stable state is a strict prelaunch launch schema. Install and upgrade reopen
 Paused, old development states are rejected, and exact submitted/proved work

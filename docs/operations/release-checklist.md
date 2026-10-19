@@ -48,5 +48,5 @@ Use this before every release-oriented commit or artifact proposal.
 - [ ] Confirm the current mock/PocketIC SNS-shaped harness is not described as official SNS launch readiness.
 - [ ] Confirm upgrade proposal hashes match `release-artifacts/manifest.json`.
 - [ ] Confirm the machine-checked release tail has one artifact-only recording commit followed only by the narrow evidence/documentation/workflow/status allowlist; ancestry alone is insufficient.
-- [ ] Confirm `validate_set_paused` is query-only, payload-compatible with `set_paused`, and paired with SNS-Governance-only execution authority on both managers.
+- [ ] Confirm routine lifecycle and two-year maturity proposal methods are absent, and install/upgrade readiness plus weekly maturity are timer-driven.
 - [ ] Confirm no deployment/mainnet calls were made.

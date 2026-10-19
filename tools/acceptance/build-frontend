@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Local/offline artifact construction only. The output must not already exist.
+repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
+output="${1:?usage: bash tools/acceptance/build-frontend ABSOLUTE_NEW_OUTPUT_DIRECTORY}"
+[[ $# -eq 1 && "$output" == /* && ! -e "$output" ]] || exit 2
+mkdir -- "$output"
+cp -a -- "$repo/canisters/frontend/public" "$output/public"
+export IO_FRONTEND_PUBLIC_DIR="$output/public"
+# Every browser input is explicit; ambient environment and .dfx cannot win.
+export IO_FRONTEND_NETWORK=ic
+export CANISTER_ID_IO_HISTORIAN=gaqmf-jaaaa-aaaas-amxva-cai
+export CANISTER_ID_IO_STREAM_MANAGER=gjthz-7iaaa-aaaas-amxuq-cai
+export CANISTER_ID_IO_LEDGER=hn6il-giaaa-aaaas-amxsq-cai
+export CANISTER_ID_FRONTEND=ghrkr-eyaaa-aaaas-amxvq-cai
+export IO_FRONTEND_DEMO=false
+cd -- "$repo"
+npm run build:frontend
+cargo build --offline --locked -p io-frontend --release --target wasm32-unknown-unknown
+cp -- "$repo/target/wasm32-unknown-unknown/release/io_frontend.wasm" "$output/io_frontend.wasm"
+sha256sum -- "$output/io_frontend.wasm"

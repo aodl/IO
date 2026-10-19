@@ -1,0 +1,34 @@
+{
+  "schema": "io.acceptance.launch-observation.v1",
+  "sale_finalization": {
+    "observed": "TBD_SALE_FINALIZATION_OBSERVED",
+    "swap_lifecycle": "TBD_CANONICAL_COMMITTED_TERMINAL_STATE",
+    "governance_mode": "TBD_CANONICAL_GOVERNANCE_NORMAL",
+    "accepted_direct_participation_icp_e8s": "TBD_ACCEPTED_DIRECT_PARTICIPATION_ICP_E8S",
+    "accepted_neurons_fund_participation_icp_e8s": 0,
+    "initial_swap_io_allocation_e8s": "TBD_ACCEPTANCE_SALE_IO_ALLOCATION_E8S",
+    "distributed_sale_neuron_stake_e8s": "TBD_DISTRIBUTED_SALE_NEURON_STAKE_E8S",
+    "sns_io_transfer_fees_burned_e8s": "TBD_SALE_IO_FEES_BURNED_E8S",
+    "swap_io_residual_e8s": "TBD_SWAP_IO_RESIDUAL_E8S",
+    "sns_icp_treasury_balance_e8s": "TBD_SNS_ICP_TREASURY_BALANCE_E8S",
+    "icp_sweep_fees_burned_e8s": "TBD_SALE_ICP_SWEEP_FEES_BURNED_E8S"
+  },
+  "post_reserve_migration": {
+    "ledger_total_supply_e8s": "TBD_CANONICAL_POST_MIGRATION_TOTAL_SUPPLY_E8S",
+    "stream_reserve_balance_e8s": "TBD_CANONICAL_STREAM_RESERVE_BALANCE_E8S",
+    "explicit_excluded_balances_e8s": [
+      "TBD_CANONICAL_RESERVE_NEURON_STAKING_BALANCE_E8S",
+      "TBD_CANONICAL_JUPITER_GOVERNANCE_NEURON_STAKING_BALANCE_E8S"
+    ]
+  },
+  "operator_capitalization": {
+    "stream_claim_backing_before_e8s": "TBD_CANONICAL_STREAM_BACKING_BEFORE_E8S",
+    "stream_claim_backing_after_e8s": "TBD_CANONICAL_STREAM_BACKING_AFTER_E8S",
+    "io_total_supply_before_e8s": "TBD_IO_SUPPLY_BEFORE_OPERATOR_CAPITALIZATION_E8S",
+    "io_total_supply_after_e8s": "TBD_IO_SUPPLY_AFTER_OPERATOR_CAPITALIZATION_E8S",
+    "permanent_cached_stake_before_e8s": "TBD_VERIFIED_PERMANENT_CACHED_STAKE_BEFORE_TOP_UP_E8S",
+    "permanent_cached_stake_after_refresh_e8s": "TBD_VERIFIED_PERMANENT_CACHED_STAKE_AFTER_REFRESH_E8S",
+    "permanent_top_up_transfer_block": "TBD_PERMANENT_TOP_UP_TRANSFER_BLOCK",
+    "stream_backing_transfer_block": "TBD_STREAM_BACKING_TRANSFER_BLOCK"
+  }
+}

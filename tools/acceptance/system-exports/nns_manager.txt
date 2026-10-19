@@ -1,0 +1,5 @@
+canister_init
+canister_post_upgrade
+get_candid_pointer
+canister_update:<ic-cdk internal> timer_executor
+canister_global_timer

@@ -17,5 +17,5 @@ export function normalizeConfig(raw = {}) {
 }
 
 export const runtimeConfig = normalizeConfig(
-  typeof __IO_FRONTEND_CONFIG__ === "undefined" ? {} : __IO_FRONTEND_CONFIG__,
+  typeof __IO_FRONTEND_CONFIG__ === "undefined" ? {} : JSON.parse(__IO_FRONTEND_CONFIG__),
 );

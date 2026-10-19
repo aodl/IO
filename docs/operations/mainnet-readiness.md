@@ -48,9 +48,10 @@ change.
 Local completion does not establish mainnet readiness. Launch remains blocked
 on:
 
-- an officially reviewed SNS release containing
-  `latest_reward_event_participation`, with refreshed official Wasm and DID
-  pins;
+- final human approval of the reviewed official SNS-W version after proposal
+  144202; its reward-share Governance and exact six-component Wasm/DID pins are
+  established locally, while required official-profile and acceptance results
+  are tracked separately;
 - final production SNS/tokenomics/configuration values and identities;
 - hosted test, security and reproducible-build CI on the exact documentation
   tail head;

@@ -1,0 +1,43 @@
+{
+  "schema": "io.acceptance.sale-contract.v2",
+  "status": "planned-small-sale",
+  "reviewed_sns_framework_id": "io-official-sns-w-version-after-144202-2026-10-05",
+  "official_version_components_required": [
+    "Governance",
+    "Root",
+    "Ledger",
+    "Index",
+    "Swap",
+    "Archive"
+  ],
+  "required_configuration": {
+    "gross_reference_price": "1 ICP per IO",
+    "jupiter_governance_only_allocation_e8s": 10000000000000000,
+    "jupiter_governance_controller_source": "environment-specific jupiter_sns_rewards_canister_id",
+    "initial_swap_io_allocation_e8s": "TBD_ACCEPTANCE_SALE_IO_ALLOCATION_E8S",
+    "minimum_total_direct_participation_icp_e8s": "INITIAL_SWAP_IO_ALLOCATION_E8S",
+    "maximum_total_direct_participation_icp_e8s": "INITIAL_SWAP_IO_ALLOCATION_E8S",
+    "minimum_participants": 1,
+    "neurons_fund_participation": false,
+    "sns_io_treasury_allocation_e8s": 0,
+    "future_swap_io_allocation_e8s": 0
+  },
+  "required_observed_postconditions": {
+    "finalization_observed": true,
+    "swap_committed_terminal_state_observed": true,
+    "governance_normal_observed": true,
+    "accepted_direct_participation_equals_sale_allocation": true,
+    "neurons_fund_participation_e8s": 0,
+    "sale_io_conservation_including_fees_rounding_and_residual": true,
+    "sale_icp_proceeds_retained_in_sns_governance_default_account": true,
+    "sale_proceeds_excluded_from_io_claim_backing": true,
+    "developer_voting_power_multiplier_percent": 100
+  },
+  "prohibited_capitalization_paths": [
+    "SNS treasury-transfer proposal",
+    "automatic SNS treasury sweep",
+    "Jupiter notification for sale proceeds",
+    "IO issuance against sale proceeds",
+    "IO issuance against operator capitalization"
+  ]
+}

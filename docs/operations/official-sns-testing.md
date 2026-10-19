@@ -31,7 +31,7 @@ This optional layer follows the current official ICP/DFINITY SNS testing documen
 
 This layer is not required CI, not part of `verify_release`, not run by `test_ci`, and not a substitute for security review or tokenomics decisions.
 
-The local package lives in `deploy/local-sns-rehearsal/`. It renders a local SNS init file from ignored inputs and implements restartable phases 12–18 for exact release dapp installation, NNS Root preparation, same-source Governance/Root publication, SNS-W creation and finalization, canonical discovery, treasury funding, ledger/index/archive evidence, controller and upgrade checks, lifecycle registration/activation, production redemption, exact NNS boundary tests and account-semantic IO orchestration. The upgrade phase can fall back from the maintained chunk-store CLI to an inline exact-Wasm SNS Governance proposal; Root still performs the upgrade and no direct management-canister substitution is used. Every phase remains guarded, loopback-only and evidence-producing; the automation itself is not proof of successful execution.
+The local package lives in `deploy/local-sns-rehearsal/`. It renders a local SNS init file from ignored inputs and implements restartable phases 12–18 for exact release dapp installation, NNS Root preparation, same-source Governance/Root publication, SNS-W creation and finalization, canonical discovery, treasury funding, ledger/index/archive evidence, controller and upgrade checks, automatic lifecycle/readiness observation, production redemption, exact NNS boundary tests and account-semantic IO orchestration. The upgrade phase can fall back from the maintained chunk-store CLI to an inline exact-Wasm SNS Governance proposal; Root still performs the upgrade and no direct management-canister substitution is used. Every phase remains guarded, loopback-only and evidence-producing; the automation itself is not proof of successful execution.
 
 Canonical packages classify conclusions into three layers. Source-built official
 SNS tooling proves the local SNS topology and governance/controller/ledger
@@ -44,12 +44,15 @@ not presented as a live-local observation.
 
 The repository validator `cargo run -p xtask -- validate_local_sns_rehearsal` is no-network and may run in normal checks. `cargo run -p xtask -- validate_local_sns_ledger` validates the selector-bound current package and is green for the current release. A future rehearsal still uses an ignored run-local inventory and may become selectable only after a new immutable package validates; it does not overwrite or rebind the current or historical packages.
 
-Source-built revision `4320fdf2e613844eabae1927b1a23b98da3a7bc6`
-locally proved `latest_reward_event_participation`. The separately reviewed
-official artifact lock remains Governance revision
-`b904c9dd1bdef8841bd12f03efbc71180a015e25`; local source proof is not official
-release adoption. Launch still requires a reviewed official release containing
-the capability and refreshed official artifact and DID pins.
+NNS proposal 144202 executed the publication of Governance revision
+`98c898f8de068a1fc0e97ebc805f9fa7f315d862`, which includes
+`latest_reward_event_participation`. The reviewed official lock selects the
+coherent SNS-W version after that proposal and binds all six component
+publications, raw/compressed Wasms and embedded DIDs. Source-built revision
+`4320fdf2e613844eabae1927b1a23b98da3a7bc6` and the fcc acceptance bundle remain
+historical candidate evidence. Official contract, IO, upgrade, lifecycle and
+real acceptance execution results are recorded separately; artifact selection
+alone does not claim those tests or final deployment-source approval.
 
 The issuance model under this layer is protocol reserve transfer. The
 standalone rehearsal proves reserve-to-user and exact user-to-reserve ICRC-1

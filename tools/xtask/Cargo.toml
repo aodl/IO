@@ -7,6 +7,13 @@ license.workspace = true
 [dependencies]
 candid.workspace = true
 hex = "0.4.3"
+io-accounts = { version = "0.1.0", path = "../../crates/io_accounts" }
+io-core-model.workspace = true
+io-governance-types.workspace = true
+io-stream-manager = { version = "0.1.0", path = "../../canisters/io_stream_manager" }
+io-nns-neuron-manager.workspace = true
+io-historian = { version = "0.1.0", path = "../../canisters/io_historian" }
+io-ledger-types.workspace = true
 io-production-wiring.workspace = true
 io-sns-manifest.workspace = true
 io-sns-lifecycle.workspace = true

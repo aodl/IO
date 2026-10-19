@@ -415,7 +415,7 @@ fn commit(
 
 async fn drive_reconciliation() -> Result<(), ApiError> {
     match crate::pool_reconciliation::ensure_latest().await {
-        Ok(true) => finish_reconciliation().await,
+        Ok(true) => finish_reconciliation(None).await,
         Ok(false) | Err(ApiError::Busy) | Err(ApiError::Pending(_)) => {
             crate::reward_timer::install_retry();
             Ok(())
@@ -424,18 +424,48 @@ async fn drive_reconciliation() -> Result<(), ApiError> {
     }
 }
 
-async fn finish_reconciliation() -> Result<(), ApiError> {
+pub(crate) async fn finish_completed_top_up(
+    operation: &crate::pool_reconciliation::PoolTopUpOperation,
+) -> Result<(), ApiError> {
+    finish_reconciliation(Some(operation)).await
+}
+
+async fn finish_reconciliation(
+    completed_top_up: Option<&crate::pool_reconciliation::PoolTopUpOperation>,
+) -> Result<(), ApiError> {
     let expected = state::read();
     let checkpoint = expected
         .latest_reconciliation_checkpoint
         .clone()
         .ok_or_else(|| ApiError::Pending("structural checkpoint is absent".into()))?;
+    if let Some(operation) = completed_top_up {
+        if !matches!(&expected.active_operation, Some(state::StreamOperation::PoolTopUp(active)) if active.as_ref() == operation)
+            || checkpoint.generation != operation.permit.generation
+        {
+            return Err(ApiError::Busy);
+        }
+    }
     let claim = crate::canonical::claim_snapshot(&expected.config)
         .await
         .map_err(ApiError::Ledger)?;
     let mut latest = state::read();
     if latest != expected {
         return Err(ApiError::Busy);
+    }
+    if let Some(operation) = completed_top_up {
+        let target = operation
+            .permit
+            .expected_parent_principal_e8s
+            .checked_add(operation.permit.claim_credit_e8s)
+            .ok_or_else(|| ApiError::Invalid("completed top-up target overflow".into()))?;
+        if claim.pooled_principal_e8s != target {
+            return Err(ApiError::Pending(
+                "completed top-up awaits its exact canonical principal".into(),
+            ));
+        }
+        // Finish the consumed generation atomically with clearing the transfer.
+        // A new Hold request would have a different identity under that generation.
+        latest.active_operation = None;
     }
     backing_registry::promote_pending(
         &mut latest.neuron_registry,

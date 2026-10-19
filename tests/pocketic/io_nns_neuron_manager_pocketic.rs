@@ -88,8 +88,15 @@ fn query<R: for<'de> Deserialize<'de> + CandidType>(
     .unwrap()
 }
 
+fn advance_and_tick(pic: &PocketIc, seconds: u64) {
+    pic.advance_time(Duration::from_secs(seconds));
+    for _ in 0..40 {
+        pic.tick();
+    }
+}
+
 #[test]
-fn simplified_nns_installs_paused_and_rejects_unauthorized_target() {
+fn simplified_nns_installs_paused_retries_and_has_no_proposal_controls() {
     if std::env::var_os("POCKET_IC_BIN").is_none() {
         eprintln!("skipping NNS-manager PocketIC test because POCKET_IC_BIN is not set");
         return;
@@ -154,27 +161,27 @@ fn simplified_nns_installs_paused_and_rejects_unauthorized_target() {
     )
     .unwrap();
     assert_eq!(status.lifecycle, Lifecycle::Paused);
-    let rendered: Result<String, String> = decode_one(
-        &pic.query_call(
-            canister,
-            Principal::anonymous(),
-            "validate_set_paused",
-            encode_one(true).unwrap(),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    let rendered = rendered.unwrap();
-    assert!(rendered.contains("Set IO NNS manager paused: true"));
-    assert!(rendered.contains("Current lifecycle: Paused"));
     assert!(pic
         .query_call(
             canister,
             Principal::anonymous(),
             "validate_set_paused",
-            encode_one(()).unwrap(),
+            encode_one(false).unwrap(),
         )
         .is_err());
+    assert!(pic
+        .update_call(
+            canister,
+            Principal::from_slice(&[2; 29]),
+            "set_paused",
+            encode_one(false).unwrap(),
+        )
+        .is_err());
+    advance_and_tick(&pic, 1);
+    assert_eq!(
+        query::<Status>(&pic, canister, "get_status").lifecycle,
+        Lifecycle::Paused
+    );
     pic.upgrade_canister(canister, wasm, encode_one(()).unwrap(), None)
         .unwrap();
     let upgraded: Status = decode_one(
@@ -188,39 +195,7 @@ fn simplified_nns_installs_paused_and_rejects_unauthorized_target() {
     )
     .unwrap();
     assert_eq!(upgraded.lifecycle, Lifecycle::Paused);
-    let rendered_after_upgrade: Result<String, String> = decode_one(
-        &pic.query_call(
-            canister,
-            Principal::anonymous(),
-            "validate_set_paused",
-            encode_one(false).unwrap(),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    let rendered_after_upgrade = rendered_after_upgrade.unwrap();
-    assert!(rendered_after_upgrade.contains("Set IO NNS manager paused: false"));
-    assert!(rendered_after_upgrade.contains("Current lifecycle: Paused"));
-    let unauthorized: Result<(), ApiError> = decode_one(
-        &pic.update_call(
-            canister,
-            principal,
-            "set_paused",
-            encode_one(false).unwrap(),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(unauthorized, Err(ApiError::Unauthorized));
-    let rejected = pic
-        .update_call(
-            canister,
-            Principal::from_slice(&[2; 29]),
-            "set_paused",
-            encode_one(false).unwrap(),
-        )
-        .expect_err("SNS readiness with unavailable dependencies must reject");
-    assert!(format!("{rejected:?}").contains("NNS lifecycle action not accepted"));
+    advance_and_tick(&pic, 1);
     let still_paused: Status = decode_one(
         &pic.query_call(
             canister,
@@ -322,7 +297,7 @@ fn jupiter_floor_baselines_and_upgrade_replay_boundaries_hold() {
         let _: u64 = update(
             &pic,
             governance,
-            Principal::anonymous(),
+            manager,
             "debug_create_neuron",
             CreateNeuronArgs {
                 neuron_id,
@@ -362,8 +337,7 @@ fn jupiter_floor_baselines_and_upgrade_replay_boundaries_hold() {
 
     let initial: Status = query(&pic, manager, "get_status");
     assert!(!initial.two_year_maturity_baseline_reconciled);
-    let ready: Result<(), ApiError> = update(&pic, manager, sns_governance, "set_paused", false);
-    ready.unwrap();
+    advance_and_tick(&pic, 1);
     let ready_status: Status = query(&pic, manager, "get_status");
     assert!(ready_status.two_year_maturity_baseline_reconciled);
 
@@ -486,8 +460,7 @@ fn jupiter_floor_baselines_and_upgrade_replay_boundaries_hold() {
     let reopened: Status = query(&pic, manager, "get_status");
     assert_eq!(reopened.lifecycle, Lifecycle::Paused);
     assert!(reopened.two_year_maturity_baseline_reconciled);
-    let ready: Result<(), ApiError> = update(&pic, manager, sns_governance, "set_paused", false);
-    ready.unwrap();
+    advance_and_tick(&pic, 1);
     let invalid_after_upgrade: Result<JupiterProgress, ApiError> = update(
         &pic,
         manager,

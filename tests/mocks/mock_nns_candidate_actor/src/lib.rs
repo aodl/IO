@@ -96,3 +96,21 @@ pub async fn refresh_neuron(
         Ok(NnsProductionManageNeuronResponse { command: None })
     }
 }
+
+/// Local caller-canister proof only. This mock is never an IO launch helper.
+#[cfg_attr(target_family = "wasm", ic_cdk::update)]
+pub async fn call_governance(target: Principal, argument: Vec<u8>) -> Result<Vec<u8>, String> {
+    #[cfg(target_family = "wasm")]
+    {
+        ic_cdk::call::Call::bounded_wait(target, "manage_neuron")
+            .with_raw_args(&argument)
+            .await
+            .map(|response| response.into_bytes())
+            .map_err(|error| format!("governance call failed: {error:?}"))
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let _ = (target, argument);
+        Err("caller proof requires installed Wasm".into())
+    }
+}

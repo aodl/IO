@@ -1,0 +1,29 @@
+{
+  "schema": "io.acceptance.stream-exclusions.v1",
+  "policy": "positive explicit economic exclusion",
+  "excluded_accounts": [
+    {
+      "name": "reserve-transport-neuron-staking-account",
+      "source": "reserve-transport genesis neuron",
+      "owner": "h7y7s-kyaaa-aaaas-amxrq-cai",
+      "subaccount_hex": "TBD_DERIVED_AFTER_GENESIS_CONTROLLER_MEMO_5282531345630769201",
+      "economic_reason": "temporary container for protocol reserve; never claim-bearing",
+      "steady_state_balance": "normally zero after direct reserve migration",
+      "permanent_exclusion": true
+    },
+    {
+      "name": "jupiter-governance-only-neuron-staking-account",
+      "source": "Jupiter governance-only genesis neuron",
+      "owner": "h7y7s-kyaaa-aaaas-amxrq-cai",
+      "subaccount_hex": "TBD_DERIVED_AFTER_JUPITER_SNS_REWARDS_MEMO_5282522618206892081",
+      "economic_reason": "100M IO supplies SNS voting power only and has zero IO monetary/reward weight",
+      "steady_state_balance": "10000000000000000 e8s permanently staked",
+      "permanent_exclusion": true,
+      "custody_requirement": "moving value to a nonexcluded Account would create unbacked claims; split, disburse, dissolution and monetary use are forbidden"
+    }
+  ],
+  "governance_neuron_is_excluded": false,
+  "ordinary_sale_neurons_are_excluded": false,
+  "stream_reserve_is_explicitly_listed": false,
+  "stream_reserve_note": "The core claim-supply formula excludes Stream reserve separately; StreamConfig rejects duplicating it in this list."
+}

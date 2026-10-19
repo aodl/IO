@@ -7,7 +7,7 @@ import { cleanGeneratedDirectory } from "./clean-generated.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "../../..");
-const publicDir = resolve(here, "../public");
+const publicDir = resolve(process.env.IO_FRONTEND_PUBLIC_DIR || resolve(here, "../public"));
 const generatedDir = resolve(publicDir, "generated");
 const outTemp = resolve(generatedDir, "app.build.js");
 const manifestPath = resolve(generatedDir, "frontend-bundle.json");
@@ -51,7 +51,7 @@ export async function buildFrontend() {
     demoMode: env("IO_FRONTEND_DEMO") === "true",
   };
 
-  cleanGeneratedDirectory();
+  cleanGeneratedDirectory(generatedDir);
 
   await build({
     entryPoints: [resolve(here, "src/main.js")],
@@ -64,7 +64,9 @@ export async function buildFrontend() {
     minify: true,
     legalComments: "none",
     define: {
-      __IO_FRONTEND_CONFIG__: JSON.stringify(config),
+      // Keep the configuration as one inspectable JSON literal in the actual
+      // executable bundle, independently of the private build manifest.
+      __IO_FRONTEND_CONFIG__: JSON.stringify(JSON.stringify(config)),
     },
   });
 

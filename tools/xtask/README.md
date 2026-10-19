@@ -51,6 +51,16 @@ With no command, xtask runs `test_all`.
 | Command | Purpose | Inputs/effects |
 | --- | --- | --- |
 | `simplicity_check` | Enforce production-size, API, authority, and simplified-execution guardrails | Fast, static, no network |
+| `acceptance_preflight [draft\|sealed]` | Validate the frozen acceptance allowlist, parameterized 1B operator/Jupiter/reserve/sale allocation, exact Account exclusions, funding manifests, environment renders, and placeholders offline | Draft checks package consistency; retired sealed mode fails explicitly and directs callers to A/B/C |
+| `acceptance_render <acceptance\|production\|accounts>` | Render one canonical acceptance artifact to stdout without network access | Checked drafts must match this output |
+| `acceptance_capitalization` | Derive `C0`, operator `B0=C0`, and rounded `Delta K=2*C0/3` from canonical successful-sale/post-reserve observations | Fails until terminal sale success and all balances/fees/residuals are observed |
+| `acceptance_preframework` | Prove IO-side sale, reserve-migration, claim-rate, 60/40 capitalization, Dynamic-target and redemption arithmetic with an explicit fixture | Does not prove real sale finalization |
+| `acceptance_preframework_pocketic` | Add focused autonomous NNS/Stream readiness tests to the preframework proof | Requires `POCKET_IC_BIN`; never touches mainnet |
+| `acceptance_local_config <context.json> <output.yaml>` | Render canonical economics with explicitly local test metadata | Uses the same renderer as deployment drafts; never approves deployment inputs |
+| `acceptance_local_accounts <context.json> <accounts.json>` | Derive complete local Accounts and economic exclusions | Creates a new file; owner and effective subaccount are explicit |
+| `acceptance_checkpoint <A\|B\|C> <evidence-directory>` | Validate before SNS installation, after sale/migration, or before IO monetary installation | A does not require B/C observations; unknown modes and extra arguments fail |
+| `acceptance_constructors <evidence-directory>` | Encode actual IO constructor types and check the production interfaces | Requires capitalization observations; creates a new constructors directory |
+| `acceptance_sale_real` | Run the exact real local launch A/B/C scenario, with test-name discovery | Requires the reviewed official SNS-W bundle, pinned parser tool, current IO Wasms and PocketIC; real acceptance identities are not required |
 | `test_all` | Developer aggregate: preflight, unit/static checks, debug PocketIC path, local `icp` build, E2E, permissive security scan | Builds generated frontend/debug artifacts; PocketIC live tests skip when unavailable |
 | `test_ci` | Development/PR CI aggregate, including completed-release integrity, required PocketIC/SNS paths, workspace tests, wasm32 check, and clippy | Requires `POCKET_IC_BIN`; heavy and serial; development may be ahead of the selected completed release |
 | `verify_release` | Release gate over APIs, pins, exact-source artifacts, wiring, stable storage, evidence, frontend, SNS, real-harness registration, and required security scan | Performs two exact-source release builds and frontend setup; does not deploy |
@@ -203,3 +213,21 @@ These commands calculate or inspect local text and do not call a network:
 - Reviewing a release without generating artifacts: run `verify_release`.
 - Generating a release: stop and follow the two-commit release procedure; do not
   use a build command as a repair for an unexplained artifact mismatch.
+
+### Acceptance configuration validation
+
+`cargo run -p xtask -- acceptance_preflight draft` rejects unknown modes and
+extra arguments. The canonical economics model rejects unknown fields and
+checks reward settings, voting bonuses, genesis classifications and capacity.
+
+`cargo run -p xtask -- acceptance_local_config CONTEXT.json OUTPUT.yaml`
+renders explicit local-only metadata from the same canonical economics and
+draft sale parameters. Context requires `operator`, `jupiter`, `stream`,
+`nns_manager`, `historian`, `frontend`, and `logo_path`. It does not approve the
+three-IO draft or alter deployment inputs. The empty initial dapp list models
+an unproven deferred-registration candidate; this command is not checkpoint A.
+
+The offline adapter under `tools/acceptance/` is unfinished: it requires a
+fresh pinned SNS CLI dependency build before its parser/payload behavior can
+be validated. See `deploy/acceptance/authority-review.md` for source findings
+and the distinction between source review and executed authority evidence.

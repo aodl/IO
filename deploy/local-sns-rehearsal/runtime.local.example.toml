@@ -10,8 +10,6 @@ swap = "TODO_LOCAL_PLANNED_SNS_SWAP"
 
 [governance]
 sns_neuron_subaccount_hex = "TODO_LOCAL_64_HEX_NEURON_SUBACCOUNT"
-stream_lifecycle_function_id = "1000"
-nns_lifecycle_function_id = "1001"
 
 [accounts]
 operator_principal = "TODO_LOCAL_OPERATOR_PRINCIPAL"

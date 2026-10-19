@@ -61,13 +61,12 @@ release pairs and packages remain immutable evidence for their own releases.
   is frozen as a zero-credit baseline. Its exact replay is structural only;
   advancing and credit-bearing events require the ordinary positive-span and
   nonzero-round proofs. Redemption remains available before round one.
-- SNS generic execution: validators are pure submission preflight and do not
-  reserve the serialized NNS slot. The reviewed SNS implementation treats any
-  normal target reply as execution success, so Stream/NNS lifecycle and
-  two-year maturity targets transport-reject nonacceptance, retain an exact
-  durable Paused/Stuck safety response, and return normal `Pending` only after
-  exact continuation state exists. A legitimate genesis Pool is settled rather
-  than suppressed or preempted before a fresh maturity proposal.
+- Autonomous execution: Stream/NNS install and upgrade reopen Paused, recover
+  known durable work, and retry canonical readiness until safe to enter Ready.
+  Protected two-year ordinary maturity uses the existing maturity state machine
+  on a weekly volatile timer. Routine lifecycle, continuation, and maturity
+  harvesting require no SNS generic function or proposal. Rare exact-block
+  proof remains caller-independent and fail-closed over the persisted intent.
 - Timers/upgrades: `scheduler.md`, `upgrades.md`, `stable-storage.md`, and `journal-compaction.md`.
 - SNS authority/controllers: `sns-root-lifecycle.md`, `docs/security/controller-and-recovery.md`, and `docs/operations/production-wiring.md`.
 - Historian non-authority: `historian.md`, `historian-ingestion.md`, and `docs/operations/historian-freshness.md`.
@@ -77,8 +76,8 @@ release pairs and packages remain immutable evidence for their own releases.
 | Classification | Evidence |
 | --- | --- |
 | Proved locally | The selector-bound `2026-09-03-270dcf3-anchored-dynamic` package proves its exact source revision: Layer A source-built official SNS launch/wiring and live-local observations, Layer B exact proposal-143660 NNS mechanics, and Layer C that revision's anchored IO economics and controlled recovery. It is immutable historical evidence, not staging-redemption evidence for this source. `docs/testing/e2e-coverage-matrix.md` identifies the current executable coverage pending a fresh stateful rehearsal. |
-| Candidate-only | Same-source SNS Governance/Root at IC `4320fdf2e613844eabae1927b1a23b98da3a7bc6`, including reward-share capability and Governance → Root compatibility. The separately reviewed official lock remains `b904c9dd1bdef8841bd12f03efbc71180a015e25`; local source proof does not establish official adoption. |
-| Officially available | Pinned official baseline artifacts/tooling in `tests/e2e_real_canisters/wasms.example.toml`; these do not imply official reward-share adoption. |
+| Historical candidate-only | Same-source SNS Governance/Root at IC `4320fdf2e613844eabae1927b1a23b98da3a7bc6`, including reward-share capability and Governance → Root compatibility. It remains immutable historical evidence. |
+| Officially available | Executed NNS proposal 144202 published Governance `98c898f8de068a1fc0e97ebc805f9fa7f315d862` with the reward-share capability. `tests/e2e_real_canisters/wasms.example.toml` binds the coherent SNS-W version after that proposal by all six publication proposals, source revisions, compressed/raw Wasms and embedded DIDs. Artifact verification does not imply final source approval or unexecuted acceptance profiles. |
 | External fixture gaps | Real transport-fault injection and non-1.0 maturity modulation, classified in `docs/operations/remaining-work.md`. |
 | Not yet audited | Final source/artifacts, launch configuration, dependencies/licenses, controller recovery, and all local evidence require independent review. |
 | Mainnet-only | Protected-position audit, production IDs/config, testflight, install/controller handoff, funding, and activation; each requires separate authorization. |

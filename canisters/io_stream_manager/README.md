@@ -115,17 +115,15 @@ is empty. Page size is capped to the free capacity in the unique, service-ordere
 candidate completes or is discarded; scanner coverage is not advanced past an
 unrepresented hint, and all staged IO remains claim-bearing.
 
-SNS lifecycle proposal validation is a pure local submission-time preflight.
-Execution remains authoritative because readiness conditions can change while
-a proposal is voting. The reviewed SNS Governance implementation treats every
-normal target reply as successful execution without decoding an
-application-level `Err`, so an authenticated `set_paused` call replies normally
-only when the requested durable lifecycle state is reached (or was already
-reached). Unaccepted pause/readiness requests reject at the transport boundary;
-unauthorized callers retain the ordinary typed error. Any active operation
-rejects readiness before canonical monetary reads. Immutable redemption work,
-including a proved payout awaiting its reserve sweep, remains recoverable
-by SNS Governance through `resume` or exact proof while Paused.
+Install and upgrade schedule automatic readiness while internally Paused.
+Persisted work is resumed first, then canonical readiness is revalidated before
+the canister enters Ready and reinstalls its normal timers. Transient or
+contradictory observations remain fail-closed and are retried without a
+governance resume action. Immutable redemption work, including a proved payout
+awaiting its reserve sweep, may be continued by any caller through deterministic
+`resume`. A rare genuinely ambiguous transfer may be resolved by any caller
+supplying an exact canonical block; the persisted immutable intent, not caller
+identity, determines acceptance.
 
 Stable state is a strict prelaunch marker-13 schema with one monetary slot,
 bounded registry, latest checkpoint, accumulator, pending batch, one minimal

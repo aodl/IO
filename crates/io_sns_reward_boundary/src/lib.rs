@@ -1,4 +1,4 @@
-use candid::{CandidType, Principal};
+use candid::{CandidType, Nat, Principal};
 use serde::Deserialize;
 
 pub const MAX_NUMBER_OF_NEURONS: u64 = 1_000;
@@ -16,31 +16,26 @@ pub enum Error {
     },
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, CandidType, Deserialize)]
-pub struct Uint128 {
-    pub high: u64,
-    pub low: u64,
-}
-
-impl Uint128 {
-    pub fn exact(self) -> u128 {
-        (u128::from(self.high) << 64) | u128::from(self.low)
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
 pub struct RewardEventParticipation {
-    pub reward_event_end_timestamp_seconds: u64,
-    pub reward_shares: Option<Uint128>,
+    pub reward_event_end_timestamp_seconds: Option<u64>,
+    pub reward_shares: Option<Nat>,
 }
 
 impl RewardEventParticipation {
-    pub fn exact_reward_shares(self) -> Result<u128, Error> {
+    pub fn exact_reward_shares(&self) -> Result<u128, Error> {
         self.reward_shares
-            .map(Uint128::exact)
+            .as_ref()
             .ok_or_else(|| Error::Invalid {
                 method: "list_neurons",
                 message: "latest reward-event participation lacks reward_shares".into(),
+            })?
+            .0
+            .clone()
+            .try_into()
+            .map_err(|_| Error::Invalid {
+                method: "list_neurons",
+                message: "latest reward-event participation reward_shares exceeds u128".into(),
             })
     }
 }
@@ -527,8 +522,22 @@ mod tests {
     }
 
     #[test]
-    fn uint128_is_exact() {
-        assert_eq!(Uint128 { high: 1, low: 7 }.exact(), (1_u128 << 64) | 7);
+    fn candid_nat_reward_shares_convert_exactly_and_fail_closed_above_u128() {
+        for value in [u128::from(u64::MAX) + 1, u128::MAX] {
+            let participation = RewardEventParticipation {
+                reward_event_end_timestamp_seconds: Some(1),
+                reward_shares: Some(Nat::from(value)),
+            };
+            assert_eq!(participation.exact_reward_shares(), Ok(value));
+        }
+        let too_large = RewardEventParticipation {
+            reward_event_end_timestamp_seconds: Some(1),
+            reward_shares: Some(Nat::from(u128::MAX) + Nat::from(1_u8)),
+        };
+        assert!(matches!(
+            too_large.exact_reward_shares(),
+            Err(Error::Invalid { .. })
+        ));
     }
 
     #[test]

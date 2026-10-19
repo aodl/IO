@@ -117,16 +117,31 @@ fn eligible_destination(
         owner: governance,
         subaccount: Some(neuron.id.clone()),
     };
-    let nonredeemable =
-        nonredeemable_governance_io_accounts
-            .iter()
-            .try_fold(false, |matched, account| {
-                destination
-                    .effective_eq(account)
-                    .map(|same| matched || same)
-            });
-    nonredeemable
-        .map(|nonredeemable| (!nonredeemable).then_some(destination))
+    Ok(
+        (!is_economically_excluded(governance, nonredeemable_governance_io_accounts, neuron)?)
+            .then_some(destination),
+    )
+}
+
+fn is_economically_excluded(
+    governance: Principal,
+    nonredeemable_governance_io_accounts: &[Account],
+    neuron: &Neuron,
+) -> Result<bool, ApiError> {
+    if neuron.id.len() != 32 {
+        return Ok(false);
+    }
+    let destination = Account {
+        owner: governance,
+        subaccount: Some(neuron.id.clone()),
+    };
+    nonredeemable_governance_io_accounts
+        .iter()
+        .try_fold(false, |matched, account| {
+            destination
+                .effective_eq(account)
+                .map(|same| matched || same)
+        })
         .map_err(ApiError::Invalid)
 }
 
@@ -164,10 +179,10 @@ pub(crate) fn event_credits_for(
         let current_shares = if no_proposals {
             0
         } else {
-            match neuron.latest_reward_event_participation {
+            match neuron.latest_reward_event_participation.as_ref() {
                 Some(participation)
                     if participation.reward_event_end_timestamp_seconds
-                        == event_id.end_timestamp_seconds =>
+                        == Some(event_id.end_timestamp_seconds) =>
                 {
                     participation
                         .exact_reward_shares()
@@ -176,9 +191,11 @@ pub(crate) fn event_credits_for(
                 Some(_) | None => 0,
             }
         };
-        canonical_share_total = canonical_share_total
-            .checked_add(current_shares)
-            .ok_or_else(|| ApiError::Invalid("canonical reward-share total overflow".into()))?;
+        if !is_economically_excluded(governance, nonredeemable_governance_io_accounts, neuron)? {
+            canonical_share_total = canonical_share_total
+                .checked_add(current_shares)
+                .ok_or_else(|| ApiError::Invalid("canonical reward-share total overflow".into()))?;
+        }
         let Some(destination) =
             eligible_destination(governance, nonredeemable_governance_io_accounts, neuron)?
         else {
@@ -242,7 +259,8 @@ pub(crate) fn event_credits_for(
 mod tests {
     use super::*;
     use crate::state::FrozenEntitlement;
-    use io_sns_reward_boundary::{DissolveState, ProposalId, RewardEventParticipation, Uint128};
+    use candid::Nat;
+    use io_sns_reward_boundary::{DissolveState, ProposalId, RewardEventParticipation};
 
     fn merge_event_credits(
         accumulated: &[FrozenEntitlement],
@@ -294,7 +312,7 @@ mod tests {
         id: u8,
         stake: u128,
         delay: u64,
-        participation: Option<(u64, Option<Uint128>)>,
+        participation: Option<(Option<u64>, Option<Nat>)>,
     ) -> Neuron {
         Neuron {
             id: vec![id; 32],
@@ -309,6 +327,10 @@ mod tests {
                 }
             }),
         }
+    }
+
+    fn shares(value: u128) -> Nat {
+        Nat::from(value)
     }
 
     fn no_exclusions() -> Vec<Account> {
@@ -373,13 +395,7 @@ mod tests {
                 1,
                 100,
                 io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
-                Some((
-                    10,
-                    Some(Uint128 {
-                        high: 0,
-                        low: 9_999,
-                    }),
-                )),
+                Some((Some(10), Some(shares(9_999)))),
             ),
             neuron(2, 200, io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS, None),
         ];
@@ -402,13 +418,13 @@ mod tests {
                 2,
                 200,
                 io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
-                Some((10, Some(Uint128 { high: 0, low: 900 }))),
+                Some((Some(10), Some(shares(900)))),
             ),
             neuron(
                 3,
                 300,
                 io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
-                Some((20, Some(Uint128 { high: 0, low: 0 }))),
+                Some((Some(20), Some(shares(0)))),
             ),
         ];
         let (classification, weights) =
@@ -465,6 +481,86 @@ mod tests {
     }
 
     #[test]
+    fn excluded_jupiter_votes_do_not_dilute_ordinary_proposal_credits() {
+        let governance = principal(1);
+        let excluded = vec![Account {
+            owner: governance,
+            subaccount: Some(vec![2; 32]),
+        }];
+        for excluded_shares in [0, 100, 10_000_000_000] {
+            let neurons = vec![
+                neuron(
+                    1,
+                    100,
+                    io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
+                    Some((Some(20), Some(shares(100)))),
+                ),
+                neuron(
+                    2,
+                    10_000_000_000,
+                    io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
+                    Some((Some(20), Some(shares(excluded_shares)))),
+                ),
+            ];
+            let (classification, credits) =
+                event_credits(governance, &excluded, &event(2, 20, 1), &neurons).unwrap();
+            assert_eq!(classification, RewardEventClassification::ProposalBearing);
+            assert_eq!(credits.len(), 1);
+            assert_eq!(credits[0].sns_neuron_id, vec![1; 32]);
+            assert_eq!(
+                credits[0].event_credit,
+                io_reward_policy::DAILY_EVENT_CREDIT
+            );
+        }
+    }
+
+    #[test]
+    fn excluded_only_proposal_participation_is_zero_eligible_not_fallback() {
+        let governance = principal(1);
+        let excluded = vec![Account {
+            owner: governance,
+            subaccount: Some(vec![2; 32]),
+        }];
+        let neurons = vec![neuron(
+            2,
+            10_000_000_000,
+            io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
+            Some((Some(20), Some(shares(10_000_000_000)))),
+        )];
+        let (classification, credits) =
+            event_credits(governance, &excluded, &event(2, 20, 1), &neurons).unwrap();
+        assert_eq!(
+            classification,
+            RewardEventClassification::ZeroEligibleParticipation
+        );
+        assert!(credits.is_empty());
+    }
+
+    #[test]
+    fn ordinary_ineligible_neuron_shares_still_remain_in_proposal_denominator() {
+        let governance = principal(1);
+        let neurons = vec![
+            neuron(
+                1,
+                100,
+                io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
+                Some((Some(20), Some(shares(100)))),
+            ),
+            neuron(
+                2,
+                100,
+                io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS - 1,
+                Some((Some(20), Some(shares(300)))),
+            ),
+        ];
+        let (classification, credits) =
+            event_credits(governance, &[], &event(2, 20, 1), &neurons).unwrap();
+        assert_eq!(classification, RewardEventClassification::ProposalBearing);
+        assert_eq!(credits.len(), 1);
+        assert_eq!(credits[0].event_credit, daily_fraction(1, 4));
+    }
+
+    #[test]
     fn no_eligible_neurons_consumes_as_zero_weight_without_a_denominator() {
         let neurons = vec![neuron(
             1,
@@ -487,7 +583,7 @@ mod tests {
             1,
             100,
             io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
-            Some((20, None)),
+            Some((Some(20), None)),
         );
         assert!(event_credits(
             principal(1),
@@ -500,11 +596,60 @@ mod tests {
             1,
             100,
             io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
-            Some((10, None)),
+            Some((Some(10), None)),
         );
         let (_, weights) =
             event_credits(principal(1), &no_exclusions(), &event(2, 20, 1), &[stale]).unwrap();
         assert!(weights.is_empty());
+
+        let missing_timestamp = neuron(
+            1,
+            100,
+            io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
+            Some((None, Some(shares(100)))),
+        );
+        let (_, weights) = event_credits(
+            principal(1),
+            &no_exclusions(),
+            &event(2, 20, 1),
+            &[missing_timestamp],
+        )
+        .unwrap();
+        assert!(weights.is_empty());
+
+        let too_large = neuron(
+            1,
+            100,
+            io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
+            Some((Some(20), Some(Nat::from(u128::MAX) + Nat::from(1_u8)))),
+        );
+        assert!(event_credits(
+            principal(1),
+            &no_exclusions(),
+            &event(2, 20, 1),
+            &[too_large],
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn current_nat_shares_preserve_values_through_u128_max() {
+        for value in [u128::from(u64::MAX) + 1, u128::MAX] {
+            let current = neuron(
+                1,
+                100,
+                io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
+                Some((Some(20), Some(shares(value)))),
+            );
+            let (_, weights) =
+                event_credits(principal(1), &no_exclusions(), &event(2, 20, 1), &[current])
+                    .unwrap();
+            assert_eq!(weights.len(), 1);
+            assert_eq!(
+                weights[0].event_credit,
+                io_reward_policy::DAILY_EVENT_CREDIT
+            );
+        }
     }
 
     #[test]
@@ -565,7 +710,7 @@ mod tests {
                         1,
                         100,
                         io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
-                        Some((10, Some(Uint128 { high: 0, low: 100 }))),
+                        Some((Some(10), Some(shares(100)))),
                     ),
                     neuron(2, 200, io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS, None),
                 ],
@@ -578,7 +723,7 @@ mod tests {
                         1,
                         100,
                         io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
-                        Some((10, Some(Uint128 { high: 0, low: 100 }))),
+                        Some((Some(10), Some(shares(100)))),
                     ),
                     neuron(2, 200, io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS, None),
                 ],
@@ -594,13 +739,13 @@ mod tests {
                         1,
                         100,
                         io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
-                        Some((10, Some(Uint128 { high: 0, low: 100 }))),
+                        Some((Some(10), Some(shares(100)))),
                     ),
                     neuron(
                         2,
                         200,
                         io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
-                        Some((30, Some(Uint128 { high: 0, low: 200 }))),
+                        Some((Some(30), Some(shares(200)))),
                     ),
                 ],
                 [
@@ -668,7 +813,7 @@ mod tests {
                 1,
                 100,
                 io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
-                Some((10, Some(Uint128 { high: 0, low: 100 }))),
+                Some((Some(10), Some(shares(100)))),
             ),
             neuron(2, 100, io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS, None),
         ];
@@ -677,25 +822,13 @@ mod tests {
                 1,
                 100,
                 io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
-                Some((
-                    20,
-                    Some(Uint128 {
-                        high: 0,
-                        low: 5_000,
-                    }),
-                )),
+                Some((Some(20), Some(shares(5_000)))),
             ),
             neuron(
                 2,
                 100,
                 io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
-                Some((
-                    20,
-                    Some(Uint128 {
-                        high: 0,
-                        low: 5_000,
-                    }),
-                )),
+                Some((Some(20), Some(shares(5_000)))),
             ),
         ];
         let (_, weights) = event_credits(governance, &[], &event(1, 10, 1), &day_one).unwrap();
@@ -737,7 +870,7 @@ mod tests {
     }
 
     #[test]
-    fn excluded_current_event_share_is_forfeited() {
+    fn excluded_current_event_share_has_zero_io_economic_weight() {
         let governance = principal(1);
         let nonredeemable = Account {
             owner: governance,
@@ -748,19 +881,22 @@ mod tests {
                 1,
                 100,
                 io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
-                Some((10, Some(Uint128 { high: 0, low: 50 }))),
+                Some((Some(10), Some(shares(50)))),
             ),
             neuron(
                 9,
                 100,
                 io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
-                Some((10, Some(Uint128 { high: 0, low: 50 }))),
+                Some((Some(10), Some(shares(50)))),
             ),
         ];
         let (_, weights) =
             event_credits(governance, &[nonredeemable], &event(1, 10, 1), &neurons).unwrap();
         assert_eq!(weights.len(), 1);
-        assert_eq!(weights[0].event_credit, daily_fraction(1, 2));
+        assert_eq!(
+            weights[0].event_credit,
+            io_reward_policy::DAILY_EVENT_CREDIT
+        );
         let allocation = io_reward_policy::allocate_rewards(
             1_000,
             io_reward_policy::DAILY_EVENT_CREDIT,
@@ -770,8 +906,8 @@ mod tests {
             )],
         )
         .unwrap();
-        assert_eq!(allocation.allocations[0].io_e8s, 500);
-        assert_eq!(allocation.forfeited_io_e8s, 500);
+        assert_eq!(allocation.allocations[0].io_e8s, 1_000);
+        assert_eq!(allocation.forfeited_io_e8s, 0);
         assert_eq!(allocation.rounding_dust_e8s, 0);
     }
 
@@ -790,7 +926,7 @@ mod tests {
                 1,
                 100,
                 io_core_model::SNS_USER_DISSOLVE_DELAY_SECONDS,
-                Some((70, Some(Uint128 { high: 0, low: 100 }))),
+                Some((Some(70), Some(shares(100)))),
             )],
         )
         .unwrap();

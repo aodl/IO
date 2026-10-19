@@ -1,0 +1,56 @@
+{
+  "schema": "io.acceptance.required-inputs.v1",
+  "final_token_name": "TBD_FINAL_TOKEN_NAME",
+  "final_token_symbol": "TBD_FINAL_TOKEN_SYMBOL",
+  "final_sns_framework_id": "TBD_FINAL_SNS_FRAMEWORK_ID",
+  "final_sns_sale_artifacts": {
+    "governance_wasm_sha256": "TBD_FINAL_SALE_GOVERNANCE_WASM_HASH",
+    "governance_did_sha256": "TBD_FINAL_SALE_GOVERNANCE_DID_HASH",
+    "root_wasm_sha256": "TBD_FINAL_SALE_ROOT_WASM_HASH",
+    "root_did_sha256": "TBD_FINAL_SALE_ROOT_DID_HASH",
+    "ledger_wasm_sha256": "TBD_FINAL_SALE_LEDGER_WASM_HASH",
+    "ledger_did_sha256": "TBD_FINAL_SALE_LEDGER_DID_HASH",
+    "index_wasm_sha256": "TBD_FINAL_SALE_INDEX_WASM_HASH",
+    "index_did_sha256": "TBD_FINAL_SALE_INDEX_DID_HASH",
+    "swap_wasm_sha256": "TBD_FINAL_SALE_SWAP_WASM_HASH",
+    "swap_did_sha256": "TBD_FINAL_SALE_SWAP_DID_HASH",
+    "archive_wasm_sha256": "TBD_FINAL_SALE_ARCHIVE_WASM_HASH",
+    "archive_did_sha256": "TBD_FINAL_SALE_ARCHIVE_DID_HASH"
+  },
+  "sale_plan": {
+    "approved_for_deployment": false,
+    "initial_swap_io_allocation_e8s": 300000000,
+    "minimum_participant_icp_e8s": 300000000,
+    "start_time": "12:00 UTC",
+    "duration_seconds": 86400,
+    "basket_count": 2,
+    "basket_interval_seconds": 86400
+  },
+  "genesis_controller_principal": "TBD_GENESIS_CONTROLLER_PRINCIPAL",
+  "sns_logo_path": "TBD_SNS_LOGO_PATH",
+  "acceptance_jupiter_sns_rewards_canister_id": "TBD_ACCEPTANCE_JUPITER_SNS_REWARDS_CANISTER_ID",
+  "acceptance_jupiter_source_principal": "TBD_ACCEPTANCE_JUPITER_PRINCIPAL",
+  "jupiter_activation_block_floor": "TBD_ACCEPTANCE_JUPITER_ACTIVATION_BLOCK_FLOOR",
+  "permanent_neuron_observation": {
+    "neuron_id": 4021054791166218,
+    "controller": "gosbn-sqaaa-aaaas-amxua-cai",
+    "staking_subaccount_hex": "TBD_ACCEPTANCE_PERMANENT_STAKING_SUBACCOUNT_HEX",
+    "cached_stake_e8s": "TBD_VERIFIED_PERMANENT_CACHED_STAKE_BEFORE_TOP_UP_E8S",
+    "ordinary_maturity_e8s": "TBD_ACCEPTANCE_PERMANENT_ORDINARY_MATURITY",
+    "staked_maturity_e8s": "TBD_ACCEPTANCE_PERMANENT_STAKED_MATURITY",
+    "dissolve_state": "TBD_ACCEPTANCE_PERMANENT_DISSOLVE_STATE",
+    "dissolve_delay_seconds": "TBD_ACCEPTANCE_PERMANENT_DISSOLVE_DELAY",
+    "auto_stake_maturity": "TBD_ACCEPTANCE_PERMANENT_AUTO_STAKE_MATURITY",
+    "follow_policy": "TBD_ACCEPTANCE_PERMANENT_FOLLOW_POLICY",
+    "maturity_disbursement_in_progress": "TBD_ACCEPTANCE_PERMANENT_PENDING_DISBURSEMENT"
+  },
+  "audited_permanent_principal_after_top_up_e8s": "TBD_AUDITED_PERMANENT_PRINCIPAL_AFTER_TOP_UP_E8S",
+  "current_source_io_artifacts": {
+    "stream_wasm_sha256": "TBD_CURRENT_SOURCE_IO_STREAM_WASM_HASH",
+    "nns_manager_wasm_sha256": "TBD_CURRENT_SOURCE_IO_NNS_MANAGER_WASM_HASH",
+    "historian_wasm_sha256": "TBD_CURRENT_SOURCE_IO_HISTORIAN_WASM_HASH",
+    "frontend_wasm_sha256": "TBD_CURRENT_SOURCE_IO_FRONTEND_WASM_HASH"
+  },
+  "proposal_url": "TBD_PROPOSAL_URL",
+  "project_url": "TBD_PROJECT_URL"
+}

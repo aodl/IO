@@ -1,0 +1,34 @@
+{
+  "schema": "io.acceptance.topology.v1",
+  "environment": "acceptance",
+  "reward_share_baseline_commit": "98c898f8de068a1fc0e97ebc805f9fa7f315d862",
+  "roles": {
+    "sns_governance": "h7y7s-kyaaa-aaaas-amxrq-cai",
+    "sns_root": "hk7o7-lqaaa-aaaas-amxsa-cai",
+    "sns_ledger": "hn6il-giaaa-aaaas-amxsq-cai",
+    "sns_index": "he5dx-qaaaa-aaaas-amxta-cai",
+    "sns_swap": "hd4fd-5yaaa-aaaas-amxtq-cai",
+    "stream_manager": "gjthz-7iaaa-aaaas-amxuq-cai",
+    "nns_manager": "gosbn-sqaaa-aaaas-amxua-cai",
+    "historian": "gaqmf-jaaaa-aaaas-amxva-cai",
+    "frontend": "ghrkr-eyaaa-aaaas-amxvq-cai"
+  },
+  "system_canisters": {
+    "icp_ledger": "ryjl3-tyaaa-aaaaa-aaaba-cai",
+    "icp_index": "qhbym-qaaaa-aaaaa-aaafq-cai",
+    "nns_governance": "rrkah-fqaaa-aaaaa-aaaaq-cai"
+  },
+  "permanent_nns_neuron": {
+    "id": 4021054791166218,
+    "controller": "gosbn-sqaaa-aaaas-amxua-cai"
+  },
+  "isolation_policy": "positive-allowlist",
+  "known_production_defence_in_depth": {
+    "stream_manager": "thset-pqaaa-aaaar-qb7wa-cai",
+    "nns_manager": "oae4c-3iaaa-aaaar-qb5qq-cai",
+    "historian": "tjqj3-uaaaa-aaaar-qb7xa-cai",
+    "frontend": "torpp-zyaaa-aaaar-qb7xq-cai",
+    "jupiter": "acjuz-liaaa-aaaar-qb4qq-cai",
+    "permanent_nns_neuron_id": 10292412127977304661
+  }
+}

@@ -233,10 +233,6 @@ service : (InitArgs) -> {
   observe_claim_assets : () -> (variant { Ok : ClaimAssetObservation; Err : ApiError });
   observe_dynamic_backing_status : () -> (variant { Ok : DynamicBackingStatus; Err : ApiError });
   observe_pool_policy : () -> (variant { Ok : PoolPolicyObservation; Err : ApiError });
-  start_maturity : (MaturityKind) -> (variant { Ok : MaturityProgress; Err : ApiError });
-  validate_start_maturity : (MaturityKind) -> (variant { Ok : text; Err : text }) query;
   prepare_two_week_maturity : (PrepareTwoWeekMaturityArgs) -> (variant { Ok; Err : ApiError });
-  set_paused : (bool) -> (variant { Ok; Err : ApiError });
-  validate_set_paused : (bool) -> (variant { Ok : text; Err : text }) query;
   get_status : () -> (Status) query;
 }

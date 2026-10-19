@@ -808,6 +808,7 @@ pub(crate) fn pause() {
     current.lifecycle = Lifecycle::Paused;
     state::write(current);
     crate::redemption_timer::cancel();
+    crate::reward_timer::install_retry();
 }
 
 fn pause_if_redemption(expected: &RedemptionOperation) {
@@ -816,6 +817,7 @@ fn pause_if_redemption(expected: &RedemptionOperation) {
         latest.lifecycle = Lifecycle::Paused;
         state::write(latest);
         crate::redemption_timer::cancel();
+        crate::reward_timer::install_retry();
     }
 }
 
@@ -823,9 +825,6 @@ pub async fn resume_stream(now: u64) -> Result<StreamProgress, ApiError> {
     let snapshot = state::read();
     match snapshot.active_operation {
         Some(StreamOperation::Redemption(_)) => {
-            if ic_cdk::api::msg_caller() != snapshot.config.sns_governance {
-                return Err(ApiError::Unauthorized);
-            }
             let _guard = RedemptionWorkGuard::acquire()?;
             resume_redemption(now).await.map(StreamProgress::Redemption)
         }
@@ -851,9 +850,6 @@ pub async fn prove_active_transfer(block_index: u128) -> Result<(), ApiError> {
         }
         Some(StreamOperation::Redemption(_)) => {}
         None => return Err(ApiError::Invalid("no active transfer".into())),
-    }
-    if ic_cdk::api::msg_caller() != state::read().config.sns_governance {
-        return Err(ApiError::Unauthorized);
     }
     let _guard = RedemptionWorkGuard::acquire()?;
     let operation = active_redemption()?;

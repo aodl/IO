@@ -18,22 +18,17 @@ use crate::{
     },
 };
 
-pub async fn start(caller: Principal, kind: MaturityKind) -> Result<MaturityProgress, ApiError> {
+pub(crate) async fn try_start_two_year_maturity() -> Result<MaturityProgress, ApiError> {
     let snapshot = crate::api::ready()?;
-    if caller != snapshot.config.sns_governance {
-        return Err(ApiError::Unauthorized);
-    }
-    if kind == MaturityKind::TwoWeek {
-        return Err(ApiError::Invalid(
-            "two-week maturity must be prepared by the stream manager for a frozen entitlement batch".into(),
-        ));
+    if snapshot.active_operation.is_some() || snapshot.pending_two_year_maturity.is_some() {
+        return Err(ApiError::Busy);
     }
     if !snapshot.two_year_maturity_baseline_reconciled {
         return Err(ApiError::Pending(
             "two-year protected NNS neuron launch baseline is unreconciled".into(),
         ));
     }
-    start_observed(snapshot, kind, None).await
+    start_observed(snapshot, MaturityKind::TwoYear, None).await
 }
 
 pub(crate) async fn start_observed(
@@ -50,9 +45,12 @@ pub(crate) async fn start_observed(
         return Err(ApiError::Busy);
     }
     let configuration = match kind {
-        MaturityKind::TwoYear => execution::validate_permanent_configuration(&observation),
+        MaturityKind::TwoYear => {
+            execution::validate_permanent_configuration(&observation, ic_cdk::api::canister_self())
+        }
         MaturityKind::TwoWeek => execution::validate_parent_configuration(
             &observation,
+            ic_cdk::api::canister_self(),
             io_nns_types::backing::FollowPolicy {
                 followee_neuron_id: snapshot.config.pooled_parent_followee_id,
             },
@@ -599,13 +597,15 @@ async fn resume_neuron_credit(
             let policy = match role {
                 NeuronCreditRole::AnchorReimbursement => execution::validate_parent_configuration(
                     &observation,
+                    ic_cdk::api::canister_self(),
                     io_nns_types::backing::FollowPolicy {
                         followee_neuron_id: config.pooled_parent_followee_id,
                     },
                 ),
-                NeuronCreditRole::OrdinaryPermanent => {
-                    execution::validate_permanent_configuration(&observation)
-                }
+                NeuronCreditRole::OrdinaryPermanent => execution::validate_permanent_configuration(
+                    &observation,
+                    ic_cdk::api::canister_self(),
+                ),
             };
             if let Err(reason) = policy {
                 let mut latest = state::read();
