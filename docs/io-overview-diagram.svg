@@ -1,0 +1,235 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="3400" height="2290" viewBox="0 0 3400 2290">
+<style>
+.bg{fill:#fbfcfe;}
+.section{font:700 18px Inter,Arial,sans-serif;fill:#2d3748;}
+.title{font:700 22px Inter,Arial,sans-serif;fill:#253041;}
+.sub{font:400 16px Inter,Arial,sans-serif;fill:#5d6b7c;}
+.sub2{font:400 15px Inter,Arial,sans-serif;fill:#5d6b7c;}
+.badge{font:700 12px Inter,Arial,sans-serif;}
+.label{font:700 14px Inter,Arial,sans-serif;fill:#3a4656;}
+.user-title{font:700 18px Inter,Arial,sans-serif;fill:#1f4db8;}
+.legend{font:600 14px Inter,Arial,sans-serif;fill:#4b5565;}
+.note{font:600 14px Inter,Arial,sans-serif;fill:#687486;}
+.num{font:700 13px Inter,Arial,sans-serif;fill:#5b6b7d;}
+.edge-icp{fill:none;stroke:#c88911;stroke-width:4;stroke-linecap:round;stroke-linejoin:round;}
+.edge-io{fill:none;stroke:#9b4bc6;stroke-width:4;stroke-linecap:round;stroke-linejoin:round;}
+.edge-state{fill:none;stroke:#90a3ba;stroke-width:3;stroke-dasharray:8 7;stroke-linecap:round;stroke-linejoin:round;}
+</style>
+<defs>
+<marker id="a-icp" markerWidth="14" markerHeight="12" refX="13" refY="6" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L14,6 L0,12 z" fill="#c88911"/></marker>
+<marker id="a-io" markerWidth="14" markerHeight="12" refX="13" refY="6" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L14,6 L0,12 z" fill="#9b4bc6"/></marker>
+<marker id="a-state" markerWidth="14" markerHeight="12" refX="13" refY="6" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L14,6 L0,12 z" fill="#90a3ba"/></marker>
+</defs>
+<rect class="bg" x="0" y="0" width="3400" height="2290"/>
+<rect x="24" y="18" width="3352" height="720" rx="22" ry="22" fill="#fbfcfe" stroke="#d8e1eb" stroke-width="1.4"/>
+<circle cx="44" cy="38" r="10.5" fill="#eef2f7" stroke="#c8d1dc" stroke-width="1.2"/>
+<text class="num" x="44" y="43" text-anchor="middle">1</text>
+<text class="section" x="60" y="45">Mine IO via Jupiter Faucet</text>
+<rect x="24" y="760" width="3352" height="720" rx="22" ry="22" fill="#fbfcfe" stroke="#d8e1eb" stroke-width="1.4"/>
+<circle cx="44" cy="780" r="10.5" fill="#eef2f7" stroke="#c8d1dc" stroke-width="1.2"/>
+<text class="num" x="44" y="785" text-anchor="middle">2</text>
+<text class="section" x="60" y="787">Restake IO for higher rewards</text>
+<rect x="24" y="1502" width="3352" height="720" rx="22" ry="22" fill="#fbfcfe" stroke="#d8e1eb" stroke-width="1.4"/>
+<circle cx="44" cy="1522" r="10.5" fill="#eef2f7" stroke="#c8d1dc" stroke-width="1.2"/>
+<text class="num" x="44" y="1527" text-anchor="middle">3</text>
+<text class="section" x="60" y="1529">Unstake and/or redeem IO</text>
+<path id="jupiter-deposit" class="edge-icp" d="M 350 188 L 1750 188 L 1750 328" marker-end="url(#a-icp)"/>
+<path id="deposit-permanent" class="edge-icp" d="M 1750 328 L 2820 328" marker-end="url(#a-icp)"/>
+<path id="deposit-liquid" class="edge-icp" d="M 1750 328 L 1516 328 L 1516 495 L 1160 495" marker-end="url(#a-icp)"/>
+<path id="jupiter-claim-to-shared-liquid-dot" class="edge-icp" d="M 1160 501 L 1160 514" marker-end="url(#a-icp)"/>
+<path id="jupiter-io-settlement" class="edge-io" d="M 1160 495 L 320 495 L 320 238" marker-end="url(#a-io)"/>
+<path id="permanent-maturity-to-staging" class="edge-icp" d="M 3050 398 L 3050 693 L 1875 693 L 1875 596" marker-end="url(#a-icp)"/>
+<path id="two-year-anchor-replenishment" class="edge-icp" d="M 1875 596 L 2355 596 L 2355 570" marker-end="url(#a-icp)"/>
+<path id="two-year-remainder-feed" class="edge-icp" d="M 1875 596 L 1875 520" marker-end="url(#a-icp)"/>
+<path id="two-year-permanent-replenishment-and-remainder" class="edge-icp" d="M 1875 520 L 1875 353 L 2830 353" marker-end="url(#a-icp)"/>
+<path id="two-year-liquid-remainder" class="edge-icp" d="M 1875 520 L 1160 520" marker-end="url(#a-icp)"/>
+<circle class="branch-dot" cx="1160" cy="495" r="6" fill="#9b4bc6" stroke="#ffffff" stroke-width="1.6"/>
+<circle class="branch-dot" cx="1160" cy="520" r="6" fill="#c88911" stroke="#ffffff" stroke-width="1.6"/>
+<g class="entity"><rect x="60" y="138" width="290" height="100" rx="24" ry="24" fill="#f3faf7" stroke="#15946a" stroke-width="1.7"/>
+<rect x="72" y="126" width="132" height="24" rx="12" ry="12" fill="#eefaf5" stroke="#15946a" stroke-width="1.3"/>
+<text class="badge" x="138" y="142" text-anchor="middle" fill="#15946a">External Protocol</text>
+<text class="title" x="80" y="180">Jupiter Faucet</text>
+<text class="sub" x="80" y="211">raw ICP source · IO recipient</text></g>
+<path id="jupiter-user-rewards" class="edge-io" d="M 205 238 L 205 547" marker-end="url(#a-io)"/>
+<text class="label" x="227" y="392" text-anchor="middle" transform="rotate(-90 227 392)">IO rewards for jUP stakers</text>
+<g class="entity user"><circle cx="205" cy="585" r="38" fill="#eef4ff" stroke="#2f6ee5" stroke-width="2.2"/>
+<circle cx="205" cy="579" r="8" fill="none" stroke="#2f6ee5" stroke-width="2.1"/>
+<path d="M 191,605 C 196,590 214,590 219,605" fill="none" stroke="#2f6ee5" stroke-width="2.1" stroke-linecap="round"/>
+<text class="user-title" x="205" y="655" text-anchor="middle">User</text></g>
+<g class="entity"><rect x="840" y="471" width="370" height="120" rx="24" ry="24" fill="#f9f5ff" stroke="#8d6db8" stroke-width="1.7" fill-opacity="0.76"/>
+<rect x="852" y="459" width="102" height="24" rx="12" ry="12" fill="#f9f5ff" stroke="#8d6db8" stroke-width="1.3" fill-opacity="0.94"/>
+<text class="badge" x="903" y="475" text-anchor="middle" fill="#8d6db8">IO Canister</text>
+<text class="title" x="860" y="527">Stream Manager</text>
+<text class="sub" x="860" y="565">liquid ICP + protocol IO reserve</text></g>
+<g class="entity"><polygon points="2186,430 2524,430 2550,500.0 2524,570 2186,570 2160,500.0" fill="#fff7e8" stroke="#bf7a14" stroke-width="2.0"/>
+<rect x="2172" y="418" width="108" height="24" rx="12" ry="12" fill="#fff7e8" stroke="#bf7a14" stroke-width="1.3"/>
+<text class="badge" x="2226" y="434" text-anchor="middle" fill="#bf7a14">NNS Neuron</text>
+<text class="title" x="2198" y="475">Dynamic 14-day</text>
+<text class="title" x="2198" y="500">neuron</text>
+<text class="sub2" x="2198" y="539">backs staked IO for higher rewards</text>
+</g>
+<g class="entity"><polygon points="2846,258 3184,258 3210,328.0 3184,398 2846,398 2820,328.0" fill="#fff7e8" stroke="#bf7a14" stroke-width="2.0"/>
+<rect x="2832" y="246" width="108" height="24" rx="12" ry="12" fill="#fff7e8" stroke="#bf7a14" stroke-width="1.3"/>
+<text class="badge" x="2886" y="262" text-anchor="middle" fill="#bf7a14">NNS Neuron</text>
+<text class="title" x="2858" y="303">Permanent 2-year</text>
+<text class="title" x="2858" y="328">neuron</text>
+<text class="sub2" x="2858" y="357">permanent stake</text>
+</g>
+<circle class="branch-dot" cx="1750" cy="328" r="6" fill="#c88911" stroke="#ffffff" stroke-width="1.6"/>
+<circle id="two-year-anchor-junction" class="branch-dot" cx="1875" cy="596" r="6" fill="#c88911" stroke="#ffffff" stroke-width="1.6"/>
+<circle id="two-year-remainder-junction" class="branch-dot" cx="1875" cy="535" r="6" fill="#c88911" stroke="#ffffff" stroke-width="1.6"/>
+<g class="entity"><rect x="1540" y="278" width="420" height="340" rx="24" ry="24" fill="#f5f7fb" stroke="#6f8fb0" stroke-width="1.7" fill-opacity="0.76"/>
+<rect x="1552" y="266" width="102" height="24" rx="12" ry="12" fill="#f5f7fb" stroke="#6f8fb0" stroke-width="1.3" fill-opacity="0.94"/>
+<text class="badge" x="1603" y="282" text-anchor="middle" fill="#6f8fb0">IO Canister</text>
+<text class="title" x="1560" y="429">NNS Neuron Manager</text>
+<text class="sub" x="1560" y="467">manages neurons and routes ICP</text></g>
+
+<rect class="label-box" x="1015.0" y="156" width="70.0" height="26" rx="13" ry="13" fill="#ffffff" stroke="#d6dee8" stroke-width="1.0"/>
+<text class="label" x="1050" y="173" text-anchor="middle">ICP</text>
+<rect id="jupiter-permanent-percent-box" class="label-box" x="2200" y="317" width="80" height="22" rx="11" ry="11" fill="#ffffff" stroke="#d6dee8" stroke-width="1.0"/>
+<text id="jupiter-permanent-percent-label" class="label" x="2223.43657" y="333" text-anchor="start">40%</text>
+<rect id="jupiter-liquid-percent-box" class="label-box" x="1320" y="484" width="70" height="22" rx="11" ry="11" fill="#ffffff" stroke="#d6dee8" stroke-width="1.0"/>
+<text id="jupiter-liquid-percent-label" class="label" x="1343.43657" y="500" text-anchor="start">60%</text>
+<rect class="label-box" x="470.0" y="486" width="100.0" height="26" rx="13" ry="13" fill="#ffffff" stroke="#d6dee8" stroke-width="1.0"/>
+<text class="label" x="520" y="503" text-anchor="middle">backed IO</text>
+<rect class="label-box" x="1960.0" y="646" width="140.0" height="26" rx="13" ry="13" fill="#ffffff" stroke="#d6dee8" stroke-width="1.0"/>
+<text class="label" x="2030" y="663" text-anchor="middle">maturity ICP</text>
+<rect class="label-box" x="1905.0" y="564" width="250.0" height="26" rx="13" ry="13" fill="#ffffff" stroke="#d6dee8" stroke-width="1.0"/>
+<text class="label" x="2030" y="581" text-anchor="middle">0-100% (anchor replenishment)</text>
+<rect id="two-year-permanent-percent-box" class="label-box" x="2200" y="342" width="170" height="22" rx="11" ry="11" fill="#ffffff" stroke="#d6dee8" stroke-width="1.0"/>
+<text id="two-year-permanent-percent-label" class="label" x="2223.43657" y="358" text-anchor="start">40% of remainder</text>
+<rect id="two-year-liquid-percent-box" class="label-box" x="1320" y="509" width="190" height="22" rx="11" ry="11" fill="#ffffff" stroke="#d6dee8" stroke-width="1.0"/>
+<text id="two-year-liquid-percent-label" class="label" x="1343.43657" y="525" text-anchor="start">60% of remainder</text>
+<path id="stake-io" class="edge-io" d="M 180 1237 L 180 965 L 430 965" marker-end="url(#a-io)"/>
+<path id="active-stake-observed" class="edge-state" d="M 770 965 L 1120 965 L 1120 1262 L 1160 1262" marker-end="url(#a-state)"/>
+<path id="middle-claim-to-shared-liquid-dot" class="edge-icp" d="M 1160 1243 L 1160 1256" marker-end="url(#a-icp)"/>
+<path id="dynamic-top-up" class="edge-icp" d="M 1160 1262 L 1160 1410 L 2355 1410 L 2355 1312" marker-end="url(#a-icp)"/>
+<path id="dynamic-maturity-to-staging" class="edge-icp" d="M 2171.142857 1242 L 1875 1242" marker-end="url(#a-icp)"/>
+<path id="dynamic-maturity-permanent" class="edge-icp" d="M 1875 1238 L 1875 1070 L 2820 1070" marker-end="url(#a-icp)"/>
+<path id="dynamic-maturity-liquid" class="edge-icp" d="M 1875 1237 L 1160 1237" marker-end="url(#a-icp)"/>
+<path id="backed-sns-rewards" class="edge-io" d="M 1154 1237 L 600 1237 L 600 1035" marker-end="url(#a-io)"/>
+<g class="entity user"><circle cx="180" cy="1275" r="38" fill="#eef4ff" stroke="#2f6ee5" stroke-width="2.2"/>
+<circle cx="180" cy="1269" r="8" fill="none" stroke="#2f6ee5" stroke-width="2.1"/>
+<path d="M 166,1295 C 171,1280 189,1280 194,1295" fill="none" stroke="#2f6ee5" stroke-width="2.1" stroke-linecap="round"/>
+<text class="user-title" x="180" y="1345" text-anchor="middle">User</text></g>
+<g class="entity"><polygon points="456,895 744,895 770,965.0 744,1035 456,1035 430,965.0" fill="#eef3ff" stroke="#2f6ee5" stroke-width="2.0"/>
+<rect x="442" y="883" width="108" height="24" rx="12" ry="12" fill="#eef3ff" stroke="#2f6ee5" stroke-width="1.3"/>
+<text class="badge" x="496" y="899" text-anchor="middle" fill="#2f6ee5">SNS Neuron</text>
+<text class="title" x="468" y="949">IO SNS neuron</text>
+<text class="sub2" x="468" y="983">15d + 1m · user-owned</text>
+</g>
+<circle class="branch-dot" cx="1160" cy="1237" r="6" fill="#9b4bc6" stroke="#ffffff" stroke-width="1.6"/>
+<circle class="branch-dot" cx="1160" cy="1262" r="6" fill="#c88911" stroke="#ffffff" stroke-width="1.6"/>
+<g class="entity"><rect x="840" y="1213" width="370" height="120" rx="24" ry="24" fill="#f9f5ff" stroke="#8d6db8" stroke-width="1.7" fill-opacity="0.76"/>
+<rect x="852" y="1201" width="102" height="24" rx="12" ry="12" fill="#f9f5ff" stroke="#8d6db8" stroke-width="1.3" fill-opacity="0.94"/>
+<text class="badge" x="903" y="1217" text-anchor="middle" fill="#8d6db8">IO Canister</text>
+<text class="title" x="860" y="1269">Stream Manager</text>
+<text class="sub" x="860" y="1307">liquid ICP + protocol IO reserve</text></g>
+<g class="entity"><polygon points="2186,1172 2524,1172 2550,1242.0 2524,1312 2186,1312 2160,1242.0" fill="#fff7e8" stroke="#bf7a14" stroke-width="2.0"/>
+<rect x="2172" y="1160" width="108" height="24" rx="12" ry="12" fill="#fff7e8" stroke="#bf7a14" stroke-width="1.3"/>
+<text class="badge" x="2226" y="1176" text-anchor="middle" fill="#bf7a14">NNS Neuron</text>
+<text class="title" x="2198" y="1217">Dynamic 14-day</text>
+<text class="title" x="2198" y="1242">neuron</text>
+<text class="sub2" x="2198" y="1281">backs staked IO for higher rewards</text>
+</g>
+<g class="entity"><polygon points="2846,1000 3184,1000 3210,1070.0 3184,1140 2846,1140 2820,1070.0" fill="#fff7e8" stroke="#bf7a14" stroke-width="2.0"/>
+<rect x="2832" y="988" width="108" height="24" rx="12" ry="12" fill="#fff7e8" stroke="#bf7a14" stroke-width="1.3"/>
+<text class="badge" x="2886" y="1004" text-anchor="middle" fill="#bf7a14">NNS Neuron</text>
+<text class="title" x="2858" y="1045">Permanent 2-year</text>
+<text class="title" x="2858" y="1070">neuron</text>
+<text class="sub2" x="2858" y="1099">permanent stake</text>
+</g>
+<circle id="dynamic-maturity-split-junction" class="branch-dot" cx="1875" cy="1240" r="6" fill="#c88911" stroke="#ffffff" stroke-width="1.6"/>
+<g class="entity"><rect x="1540" y="1020" width="420" height="340" rx="24" ry="24" fill="#f5f7fb" stroke="#6f8fb0" stroke-width="1.7" fill-opacity="0.76"/>
+<rect x="1552" y="1008" width="102" height="24" rx="12" ry="12" fill="#f5f7fb" stroke="#6f8fb0" stroke-width="1.3" fill-opacity="0.94"/>
+<text class="badge" x="1603" y="1024" text-anchor="middle" fill="#6f8fb0">IO Canister</text>
+<text class="title" x="1560" y="1171">NNS Neuron Manager</text>
+<text class="sub" x="1560" y="1209">manages neurons and routes ICP</text></g>
+<rect class="label-box" x="245.0" y="933" width="120.0" height="26" rx="13" ry="13" fill="#ffffff" stroke="#d6dee8" stroke-width="1.0"/>
+<text class="label" x="305" y="950" text-anchor="middle">stake IO</text>
+<rect class="label-box" x="810.0" y="933" width="260.0" height="26" rx="13" ry="13" fill="#ffffff" stroke="#d6dee8" stroke-width="1.0"/>
+<text class="label" x="940" y="950" text-anchor="middle">scheduled stake observations</text>
+<rect class="label-box" x="1770.0" y="1397" width="520.0" height="22" rx="11" ry="11" fill="#ffffff" stroke="#d6dee8" stroke-width="1.0"/>
+<text class="label" x="2030" y="1413" text-anchor="middle">stake ICP in response to IO staked (including IO staking rewards)</text>
+<rect class="label-box" x="1960.0" y="1204" width="140.0" height="26" rx="13" ry="13" fill="#ffffff" stroke="#d6dee8" stroke-width="1.0"/>
+<text class="label" x="2030" y="1221" text-anchor="middle">maturity ICP</text>
+<rect id="middle-permanent-percent-box" class="label-box" x="2200" y="1059" width="80" height="22" rx="11" ry="11" fill="#ffffff" stroke="#d6dee8" stroke-width="1.0"/>
+<text id="middle-permanent-percent-label" class="label" x="2223.43657" y="1075" text-anchor="start">40%</text>
+<rect id="middle-liquid-percent-box" class="label-box" x="1320" y="1226" width="70" height="22" rx="11" ry="11" fill="#ffffff" stroke="#d6dee8" stroke-width="1.0"/>
+<text id="middle-liquid-percent-label" class="label" x="1343.43657" y="1242" text-anchor="start">60%</text>
+<rect class="label-box" x="640.0" y="1208" width="150.0" height="26" rx="13" ry="13" fill="#ffffff" stroke="#d6dee8" stroke-width="1.0"/>
+<text class="label" x="715" y="1225" text-anchor="middle">IO staking rewards</text>
+<path id="start-sns-dissolve" class="edge-state" d="M 142 2017 L 95 2017 L 95 1592 L 600 1592 L 600 1637" marker-end="url(#a-state)"/>
+<path id="unlocked-io-return" class="edge-io" d="M 430 1707 L 180 1707 L 180 1979" marker-end="url(#a-io)"/>
+<path id="active-stake-falls" class="edge-state" d="M 770 1707 L 1120 1707 L 1120 1984 L 1160 1984" marker-end="url(#a-state)"/>
+<path id="lower-target-request" class="edge-state" d="M 1160 1984 L 1740 1984" marker-end="url(#a-state)"/>
+<path id="split-start-command" class="edge-state" d="M 1740 1984 L 2160 1984" marker-end="url(#a-state)"/>
+<path id="split-child-principal" class="edge-icp" d="M 2550 1984 L 2840 1984" marker-end="url(#a-icp)"/>
+<path id="child-principal-return" class="edge-icp" d="M 3000 2034 L 3000 2148 L 1285 2148 L 1285 2019 L 1166 2019" marker-end="url(#a-icp)"/>
+<path id="redemption-io-push" class="edge-io" d="M 218 2019 L 1154 2019" marker-end="url(#a-io)"/>
+<path id="redemption-icp-payout" class="edge-icp" d="M 1160 2025 L 1160 2148 L 180 2148 L 180 2055" marker-end="url(#a-icp)"/>
+<g class="entity user"><circle cx="180" cy="2017" r="38" fill="#eef4ff" stroke="#2f6ee5" stroke-width="2.2"/>
+<circle cx="180" cy="2011" r="8" fill="none" stroke="#2f6ee5" stroke-width="2.1"/>
+<path d="M 166,2037 C 171,2022 189,2022 194,2037" fill="none" stroke="#2f6ee5" stroke-width="2.1" stroke-linecap="round"/>
+<rect x="146" y="2071" width="68" height="24" rx="12" ry="12" fill="#ffffff"/>
+<text class="user-title" x="180" y="2087" text-anchor="middle">User</text></g>
+<g class="entity"><polygon points="456,1637 744,1637 770,1707.0 744,1777 456,1777 430,1707.0" fill="#eef3ff" stroke="#2f6ee5" stroke-width="2.0"/>
+<rect x="442" y="1625" width="108" height="24" rx="12" ry="12" fill="#eef3ff" stroke="#2f6ee5" stroke-width="1.3"/>
+<text class="badge" x="496" y="1641" text-anchor="middle" fill="#2f6ee5">SNS Neuron</text>
+<text class="title" x="468" y="1691">IO SNS neuron</text>
+<text class="sub2" x="468" y="1725">15d + 1m · user-owned</text>
+</g>
+<circle class="branch-dot" cx="1160" cy="2019" r="6" fill="#c88911" stroke="#ffffff" stroke-width="1.6"/>
+<g class="entity"><rect x="840" y="1955" width="370" height="120" rx="24" ry="24" fill="#f9f5ff" stroke="#8d6db8" stroke-width="1.7" fill-opacity="0.76"/>
+<rect x="852" y="1943" width="102" height="24" rx="12" ry="12" fill="#f9f5ff" stroke="#8d6db8" stroke-width="1.3" fill-opacity="0.94"/>
+<text class="badge" x="903" y="1959" text-anchor="middle" fill="#8d6db8">IO Canister</text>
+<text class="title" x="860" y="2011">Stream Manager</text>
+<text class="sub" x="860" y="2049">liquid ICP + protocol IO reserve</text></g>
+<g class="entity"><rect x="1540" y="1762" width="420" height="340" rx="24" ry="24" fill="#f5f7fb" stroke="#6f8fb0" stroke-width="1.7" fill-opacity="0.76"/>
+<rect x="1552" y="1750" width="102" height="24" rx="12" ry="12" fill="#f5f7fb" stroke="#6f8fb0" stroke-width="1.3" fill-opacity="0.94"/>
+<text class="badge" x="1603" y="1766" text-anchor="middle" fill="#6f8fb0">IO Canister</text>
+<text class="title" x="1560" y="1913">NNS Neuron Manager</text>
+<text class="sub" x="1560" y="1951">manages neurons and routes ICP</text></g>
+<g class="entity"><polygon points="2186,1914 2524,1914 2550,1984.0 2524,2054 2186,2054 2160,1984.0" fill="#fff7e8" stroke="#bf7a14" stroke-width="2.0"/>
+<rect x="2172" y="1902" width="108" height="24" rx="12" ry="12" fill="#fff7e8" stroke="#bf7a14" stroke-width="1.3"/>
+<text class="badge" x="2226" y="1918" text-anchor="middle" fill="#bf7a14">NNS Neuron</text>
+<text class="title" x="2198" y="1959">Dynamic 14-day</text>
+<text class="title" x="2198" y="1984">neuron</text>
+<text class="sub2" x="2198" y="2023">backs staked IO for higher rewards</text>
+</g>
+<g class="entity"><polygon points="2866,1934 3134,1934 3160,1984.0 3134,2034 2866,2034 2840,1984.0" fill="#fff7e8" stroke="#bf7a14" stroke-width="2.0"/>
+<rect x="2852" y="1922" width="108" height="24" rx="12" ry="12" fill="#fff7e8" stroke="#bf7a14" stroke-width="1.3"/>
+<text class="badge" x="2906" y="1938" text-anchor="middle" fill="#bf7a14">NNS Neuron</text>
+<text class="title" x="2878" y="1969">Dissolving</text>
+<text class="title" x="2878" y="1994">child neurons</text>
+<text class="sub2" x="2878" y="2023">one per dissolve observation batch</text>
+</g>
+<rect class="label-box" x="300.0" y="1560" width="120.0" height="26" rx="13" ry="13" fill="#ffffff" stroke="#d6dee8" stroke-width="1.0"/>
+<text class="label" x="360" y="1577" text-anchor="middle">start dissolve</text>
+<rect class="label-box" x="195.0" y="1675" width="220.0" height="26" rx="13" ry="13" fill="#ffffff" stroke="#d6dee8" stroke-width="1.0"/>
+<text class="label" x="305" y="1692" text-anchor="middle">unlock after dissolve delay</text>
+<rect class="label-box" x="785.0" y="1675" width="270.0" height="26" rx="13" ry="13" fill="#ffffff" stroke="#d6dee8" stroke-width="1.0"/>
+<text class="label" x="920" y="1692" text-anchor="middle">scheduled dissolve observations</text>
+<rect class="label-box" x="1310.0" y="1942" width="130.0" height="26" rx="13" ry="13" fill="#ffffff" stroke="#d6dee8" stroke-width="1.0"/>
+<text class="label" x="1375" y="1959" text-anchor="middle">lower target</text>
+<rect class="label-box" x="1938.0" y="1942" width="184.0" height="26" rx="13" ry="13" fill="#ffffff" stroke="#d6dee8" stroke-width="1.0"/>
+<text class="label" x="2030" y="1959" text-anchor="middle">split excess + dissolve</text>
+<rect class="label-box" x="1890.0" y="2110" width="280.0" height="26" rx="13" ry="13" fill="#ffffff" stroke="#d6dee8" stroke-width="1.0"/>
+<text class="label" x="2030" y="2127" text-anchor="middle">ICP from dissolved neurons</text>
+<rect class="label-box" x="469.0" y="2030" width="132.0" height="26" rx="13" ry="13" fill="#ffffff" stroke="#d6dee8" stroke-width="1.0"/>
+<text class="label" x="535" y="2047" text-anchor="middle">redeem IO</text>
+<rect class="label-box" x="525.0" y="2160" width="70.0" height="26" rx="13" ry="13" fill="#ffffff" stroke="#d6dee8" stroke-width="1.0"/>
+<text class="label" x="560" y="2177" text-anchor="middle">ICP</text>
+<!-- Additional arrowheads at box entries only; original destination and junction arrowheads are preserved. -->
+<path id="jupiter-deposit-boxhead" class="edge-icp" d="M 1750 258 L 1750 278" marker-end="url(#a-icp)"/>
+<path id="deposit-liquid-stream-boxhead" class="edge-icp" d="M 1230 495 L 1210 495" marker-end="url(#a-icp)"/>
+<path id="permanent-maturity-to-staging-boxhead" class="edge-icp" d="M 1875 638 L 1875 618" marker-end="url(#a-icp)"/>
+<path id="two-year-liquid-stream-boxhead" class="edge-icp" d="M 1230 520 L 1210 520" marker-end="url(#a-icp)"/>
+<path id="active-stake-observed-boxhead" class="edge-state" d="M 1120 1193 L 1120 1213" marker-end="url(#a-state)"/>
+<path id="dynamic-maturity-to-staging-boxhead" class="edge-icp" d="M 1980 1242 L 1960 1242" marker-end="url(#a-icp)"/>
+<path id="dynamic-maturity-liquid-stream-boxhead" class="edge-icp" d="M 1230 1237 L 1210 1237" marker-end="url(#a-icp)"/>
+<path id="active-stake-falls-boxhead" class="edge-state" d="M 1120 1935 L 1120 1955" marker-end="url(#a-state)"/>
+<path id="lower-target-request-nns-boxhead" class="edge-state" d="M 1520 1984 L 1540 1984" marker-end="url(#a-state)"/>
+<path id="child-principal-return-stream-boxhead" class="edge-icp" d="M 1230 2019 L 1210 2019" marker-end="url(#a-icp)"/>
+<path id="redemption-io-push-boxhead" class="edge-io" d="M 820 2019 L 840 2019" marker-end="url(#a-io)"/>
+</svg>
