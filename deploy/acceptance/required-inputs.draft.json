@@ -2,7 +2,7 @@
   "schema": "io.acceptance.required-inputs.v1",
   "final_token_name": "TBD_FINAL_TOKEN_NAME",
   "final_token_symbol": "TBD_FINAL_TOKEN_SYMBOL",
-  "final_sns_sale_commit": "TBD_FINAL_SNS_SALE_COMMIT",
+  "final_sns_framework_id": "TBD_FINAL_SNS_FRAMEWORK_ID",
   "final_sns_sale_artifacts": {
     "governance_wasm_sha256": "TBD_FINAL_SALE_GOVERNANCE_WASM_HASH",
     "governance_did_sha256": "TBD_FINAL_SALE_GOVERNANCE_DID_HASH",

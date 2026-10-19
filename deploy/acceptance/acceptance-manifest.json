@@ -1,7 +1,7 @@
 {
   "schema": "io.acceptance.topology.v1",
   "environment": "acceptance",
-  "reward_share_baseline_commit": "fcc281f7200a8d3192ec46c225b436b2096bbf58",
+  "reward_share_baseline_commit": "98c898f8de068a1fc0e97ebc805f9fa7f315d862",
   "roles": {
     "sns_governance": "h7y7s-kyaaa-aaaas-amxrq-cai",
     "sns_root": "hk7o7-lqaaa-aaaas-amxsa-cai",

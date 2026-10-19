@@ -243,7 +243,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         swap: id("swap")?,
         index: id("index")?,
     };
-    let payloads = init.build_canister_payloads(&ids, None, false)?;
+    let mut payloads = init.build_canister_payloads(&ids, None, false)?;
+    // This SNS is installed manually from a reviewed, frozen official tuple.
+    // The friendly init format does not expose this standard Governance
+    // parameter, so bind it explicitly before encoding the source-defined
+    // constructor payload. Otherwise Governance's periodic task can discover
+    // its running version through Root and advance to a later SNS-W target.
+    payloads
+        .governance
+        .parameters
+        .as_mut()
+        .ok_or("Governance parameters missing")?
+        .automatically_advance_target_version = Some(false);
     let parameters = payloads
         .governance
         .parameters
@@ -257,13 +268,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("effective reward duration differs from canonical model".into());
     }
     // The friendly parser cannot set the capacity bound. Do not silently patch
-    // genesis: emit the standard post-sale Governance change required before C.
+    // that economic limit at genesis: emit the standard post-sale Governance
+    // change required before C, and repeat the frozen-version setting in the
+    // same proposal.
     let mut required_parameters = ic_sns_governance::pb::v1::NervousSystemParameters::default();
     required_parameters.max_number_of_neurons = Some(
         e["maximum_number_of_neurons"]
             .as_u64()
             .ok_or("neuron bound missing")?,
     );
+    required_parameters.automatically_advance_target_version = Some(false);
     fs::create_dir(output)?;
     macro_rules! write_payload {
         ($name:literal, $payload:expr) => {{
@@ -338,7 +352,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "{}\n",
             json!({
                 "genesis_max_number_of_neurons": parameters.max_number_of_neurons,
+                "genesis_automatically_advance_target_version": parameters.automatically_advance_target_version,
                 "required_max_number_of_neurons": required_parameters.max_number_of_neurons,
+                "required_automatically_advance_target_version": required_parameters.automatically_advance_target_version,
                 "route": "standard ManageNervousSystemParameters proposal after successful sale, before IO installation",
                 "testflight": false
             })

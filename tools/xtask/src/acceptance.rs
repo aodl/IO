@@ -33,6 +33,8 @@ const JUPITER_GOVERNANCE_MEMO: u64 = 0x494f_4a55_5030_3031; // IOJUP001
 const RESERVE_MEMO: u64 = 0x494f_5245_5330_3031; // IORES001
 const SALE_MEMO_START: u64 = 1_000_000;
 const SALE_MEMO_END: u64 = 10_000_000;
+const APPROVED_SNS_LOCK_TEXT: &str =
+    include_str!("../../../tests/e2e_real_canisters/wasms.example.toml");
 // The reviewed repository baseline is the approval boundary, not an input from
 // an evidence directory. Changing it requires source review and recompilation.
 fn approved_sns_baseline() -> &'static Value {
@@ -45,9 +47,22 @@ fn approved_sns_baseline() -> &'static Value {
     &BASELINE
 }
 fn approved_sns_source() -> &'static str {
-    approved_sns_baseline()["commit"]
+    approved_sns_baseline()["parser"]["commit"]
         .as_str()
-        .expect("reviewed SNS commit")
+        .expect("reviewed SNS parser commit")
+}
+fn approved_sns_framework() -> &'static str {
+    approved_sns_baseline()["framework_id"]
+        .as_str()
+        .expect("reviewed SNS framework ID")
+}
+fn approved_sns_manifest() -> &'static io_sns_manifest::SnsManifest {
+    static MANIFEST: std::sync::LazyLock<io_sns_manifest::SnsManifest> =
+        std::sync::LazyLock::new(|| {
+            io_sns_manifest::SnsManifest::parse(APPROVED_SNS_LOCK_TEXT)
+                .expect("reviewed official SNS lock")
+        });
+    &MANIFEST
 }
 const PRODUCTION_JUPITER_SNS_REWARDS_CANISTER_ID: &str = "alk7f-5aaaa-aaaar-qb4ra-cai";
 const STREAM_RESERVE_SUBACCOUNT: [u8; 32] =
@@ -671,7 +686,9 @@ fn validate_manifest(manifest: &AcceptanceManifest) -> Result<(), String> {
         ("historian", "gaqmf-jaaaa-aaaas-amxva-cai"),
         ("frontend", "ghrkr-eyaaa-aaaas-amxvq-cai"),
     ]);
-    if manifest.reward_share_baseline_commit != approved_sns_source() {
+    if Some(manifest.reward_share_baseline_commit.as_str())
+        != approved_sns_manifest().artifact("sns_governance", "upstream_rev")
+    {
         return Err("acceptance reward-share baseline commit changed".into());
     }
     if manifest.roles.len() != expected.len() {
@@ -1290,6 +1307,11 @@ fn validate_static_artifacts(root: &Path, sealed: bool) -> Result<(), String> {
         );
     }
     let contract: Value = read_json(root, &format!("{DIR}/sale-contract.json"))?;
+    if contract["schema"] != "io.acceptance.sale-contract.v2"
+        || contract["reviewed_sns_framework_id"] != approved_sns_framework()
+    {
+        return Err("sale semantic contract uses an unreviewed SNS framework".into());
+    }
     for key in [
         "finalization_observed",
         "swap_committed_terminal_state_observed",
@@ -1309,7 +1331,13 @@ fn validate_static_artifacts(root: &Path, sealed: bool) -> Result<(), String> {
         }
     }
     let baseline: Value = read_json(root, &format!("{DIR}/sns-source-baseline.json"))?;
-    if baseline["commit"] != approved_sns_source()
+    if baseline["schema"] != "io.acceptance.sns-source-baseline.v2"
+        || baseline["framework_id"] != approved_sns_framework()
+        || baseline["parser"]["commit"] != approved_sns_source()
+        || baseline["official_lock"]["path"] != "tests/e2e_real_canisters/wasms.example.toml"
+        || baseline["official_lock"]["sha256"]
+            != hex::encode(Sha256::digest(APPROVED_SNS_LOCK_TEXT.as_bytes()))
+        || approved_sns_manifest().value("metadata", "version") != Some(approved_sns_framework())
         || baseline["reward_event_participation_candid"]["reward_event_end_timestamp_seconds"]
             != "opt nat64"
         || baseline["reward_event_participation_candid"]["reward_shares"] != "opt nat"
@@ -2149,6 +2177,16 @@ mod tests {
     #[test]
     fn checked_draft_package_is_self_consistent_and_sealed_mode_fails_closed() {
         let root = repository_root();
+        let mut manifest = manifest(&root).unwrap();
+        manifest.reward_share_baseline_commit = approved_sns_manifest()
+            .artifact("sns_governance", "upstream_rev")
+            .unwrap()
+            .to_string();
+        validate_manifest(&manifest).unwrap();
+        manifest.reward_share_baseline_commit = "0".repeat(40);
+        assert!(validate_manifest(&manifest)
+            .unwrap_err()
+            .contains("reward-share baseline"));
         validate(&root, false).unwrap();
         let error = validate(&root, true).unwrap_err();
         assert!(

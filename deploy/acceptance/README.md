@@ -44,12 +44,21 @@ canisters, and permanent neuron `4_021_054_791_166_218`, controlled by the
 acceptance NNS Manager. Known production IO principals and production neuron
 `10_292_412_127_977_304_661` are secondary contamination checks.
 
-The reviewed source authority is [sns-source-baseline.json](sns-source-baseline.json).
-The parser builder reads it and validators compile it into their approval
-boundary. Evidence directories and required-input hashes cannot select another
-revision. Its pin is for local rehearsal; final sale-source approval is unresolved.
-Governance, Root, Ledger, Index, Swap and Archive artifacts and DIDs must come
-from one clean approved revision with the required reward-participation ABI.
+The reviewed component authority is the existing official lock at
+`tests/e2e_real_canisters/wasms.example.toml`.
+[sns-source-baseline.json](sns-source-baseline.json) binds that lock by hash and
+separately pins the clean parser source. The parser builder and validators
+compile those files into their approval boundary. Evidence directories and
+required-input hashes cannot select another version. These pins are for local
+rehearsal; final sale-source approval is unresolved.
+The reviewed official SNS-W version is the coherent component tuple after
+executed NNS proposal 144202. Governance, Root, Ledger, Index, Swap and Archive
+are bound independently by their official proposal, source revision, compressed
+and raw Wasm hashes, and embedded DID hash. Governance supplies the required
+reward-participation ABI. This official tuple replaces the active same-source
+candidate requirement without rewriting historical candidate evidence.
+`io-official-sns-w-version-after-144202-2026-10-05` is an IO-local label for
+that frozen tuple, not an identifier issued by SNS-W or the network.
 
 Checkpoint A also requires an authorized full-neuron baseline response. An
 operator who controls the empty NNS Manager is not thereby authorized to query
@@ -169,6 +178,13 @@ a token name of at least four characters and symbol of at least three. Supply
 `FINAL_TOKEN_NAME` and `FINAL_TOKEN_SYMBOL`, or separately review a framework
 change; the renderer does not silently rename the product. Local valid test
 metadata is not deployable branding.
+
+The manually installed SNS is source-frozen: its typed Governance constructor
+sets `automatically_advance_target_version = false`, and the existing post-sale
+parameter proposal repeats that setting alongside the 1,000-neuron capacity
+limit. Checkpoint C requires the read-only effective-parameter observation to
+remain false. This prevents Governance's periodic SNS-W upgrade discovery from
+changing the reviewed component hashes without an IO-specific proposal.
 
 At the reviewed SNS source, normal actions use the configured initial voting
 period and wait-for-quiet increase. IO renders `1 day` and `12 hours`, giving

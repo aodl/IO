@@ -132,7 +132,7 @@ fetch_one sns_ledger
 fetch_one sns_index
 
 # These are fetched only after the manifest has real pinned URL/hash values.
-for optional in sns_governance sns_root sns_swap sns_archive sns_wasm nns_governance nns_ledger nns_root nns_lifeline nns_registry cmc icp_ledger icp_index; do
+for optional in sns_governance sns_governance_baseline sns_root sns_swap sns_archive sns_wasm nns_governance nns_ledger nns_root nns_lifeline nns_registry cmc icp_ledger icp_index; do
   fetch_one "${optional}"
 done
 

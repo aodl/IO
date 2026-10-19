@@ -1,4 +1,133 @@
-# Acceptance implementation and validation — 2026-09-14
+# Acceptance implementation and validation
+
+## Official SNS validation — 2026-10-18
+
+Executed NNS proposal 144202 officially published Governance revision
+`98c898f8de068a1fc0e97ebc805f9fa7f315d862` with the exact
+`latest_reward_event_participation` ABI used by IO. The active reviewed lock and
+checkpoint-A authority select the coherent SNS-W version after that
+proposal, rather than requiring the historical fcc same-source candidate.
+Resolution against downloaded bytes passed for all six official components:
+compressed and raw Wasm hashes, embedded source revisions and embedded DIDs all
+match the reviewed pins. The clean parser source is independently pinned to
+`98c898f8de068a1fc0e97ebc805f9fa7f315d862`. Final source approval remains a
+human gate.
+
+The official-source track is `OFFICIAL_SOURCE_VERIFIED_AND_LOCALLY_TESTED`;
+the canonical validation track is `CI_GREEN` for the tested implementation
+below. The package remains `LOCALLY_REHEARSED_AWAITING_INPUTS`, not approved
+for deployment. The dated sections following this update preserve historical
+results, including failed aggregates; they are not the current validation status.
+
+### Tested source and inputs
+
+- Branch/HEAD: `feature/self-deployed-sns-acceptance` at
+  `d3435371d6aa743b3fc17bb0038cf90e9765dd1e`, with the uncommitted adoption
+  implementation. Pre-CI tracked patch SHA-256:
+  `2bac20780f04dc429ec9aaffe0ac0a45beffd713664fc1230182d4bbebeb36f1`;
+  stable patch ID: `536916ac1f79e08a4e219a79f3396d4c0c5d7515`.
+  Status reconciliation after this run changes documentation only.
+- Source mode `official`, scope `governance`, no component overrides; reviewed
+  baseline `io-official-sns-w-version-after-144202-2026-10-05` is an IO-local
+  frozen-tuple label, not a network-issued SNS-W identifier. The resolved
+  manifest is
+  `/home/codexdev/.cache/io/sns-framework/official-io-official-sns-w-version-after-144202-2026-10-05-df5653d713dc6068/manifest.toml`,
+  SHA-256 `c5eeb025b2f4b726e4eae746958413fe3da74717b3641c9acb0aaa51bc57f45c`.
+  The previous Governance artifact is an upgrade-test input, not a seventh
+  deployed component.
+- Clean parser source: `98c898f8de068a1fc0e97ebc805f9fa7f315d862`;
+  binary `/home/codexdev/.cache/io/acceptance-parser-98c-auto-frozen-v1/sns-payloads`,
+  SHA-256 `472ae7449f13ce776fb2cfd3752c5df75de81858d878b57b9787ccea2ac2bbb5`.
+  Its completed build log is `20261018T090215Z-2992436.log` in the directory below.
+- Acceptance used current-source optimized IO Wasms and the isolated frontend
+  output `/home/codexdev/.cache/io/acceptance-frontend-official-98c-v1`.
+  Typed Governance initialization, the existing post-sale parameter proposal,
+  and queried effective parameters all prove automatic target advancement
+  false; the effective neuron-capacity limit is 1,000. Installed module hashes
+  match the reviewed artifacts.
+
+### Executed results
+
+All logs below are local retained files under
+`/home/codexdev/.codex-io/sns-framework/commands/`; exact commands, exit statuses
+and source checkpoints are in the sibling `PROGRESS.md` and `checkpoints/`.
+Each listed invocation exited zero. Requested real cases executed rather than
+silently skipping. Profile test names retain historical `candidate` wording
+but these runs used the selected official bundle.
+
+| Validation | Actual execution | Command log |
+|---|---|---|
+| Official `contract` with required `latest_reward_event_participation` | 10 boundary tests, 1 additive Candid test, 1 real contract case (27.33 s) passed | `20261018T160754Z-3349458.log` |
+| Official `io` with the same required capability | Boundary/Candid/real contract checks passed; real IO reward-share case passed (192.14 s) | `20261018T160935Z-3351099.log` |
+| Official `upgrade` with the same required capability | 1 real reviewed predecessor-to-selected Governance upgrade case passed (222.02 s) | `20261018T161351Z-3354096.log` |
+| `acceptance_sale_real` | 1 passed, 0 ignored (198.85 s): genuine sale, successful finalization, Governance Normal, A/B/C, capitalization, Governance/Root installations, frontend binding, entitlement and exact redemption | `20261018T162307Z-3362160.log` |
+| `real_launch_timer_only_top_up_and_reward` | 1 passed, 0 ignored (192.54 s): zero keeper calls, generation-1 TopUp and structural finalization, generation 2 and subsequent eligible reward event | `20261018T162647Z-3365522.log` |
+| Real A/B/C negative cases | 2 passed, 0 ignored (816.62 s) | `20261018T163053Z-3368834.log` |
+| Full NNS recovery target | 29 passed, 0 failed, 0 ignored (1,195.90 s); idle/hard TTL 120/7,200 s unchanged | `20261018T164444Z-3376815.log` |
+| Full Stream target | 24 passed, 0 failed, 0 ignored (1,523.37 s); idle/hard TTL 300/3,600 s unchanged | `20261018T170500Z-3393749.log` |
+
+The profiles prove exact current-event timestamps and `opt nat` shares, positive
+participation with zero native SNS reward issuance, zero/stale/absent-share
+handling, IO normalization and Jupiter economic exclusion, and source-defined
+Governance upgrade compatibility. Historical-manifest compatibility remains
+static validation, not runtime execution of arbitrary older locks.
+
+Real acceptance evidence is
+`target/acceptance-sale-3363171-1792340636447101422`; timer-only evidence is
+`target/acceptance-sale-3366281-1792340882222348909/timer-only.json`.
+The timer-only run retained backing `3299980000` e8s and separately charged
+`10000` e8s to the excluded anchor. The acceptance redemption paid exactly
+`49990303` ICP e8s for `50000000` IO e8s. The first official acceptance attempt
+failed because the parameter-observation DTO omitted the automatic-advance
+field; retaining that field fixed the summary comparison. The fresh complete
+pass above, not that failed attempt, is the acceptance result.
+
+### Canonical CI, security and reproducibility
+
+The unchanged canonical `cargo run --offline --locked -p xtask -- test_ci`
+ran serially with PocketIC 14, `POCKET_IC_MUTE_SERVER=1`,
+`RUST_TEST_THREADS=1`, `CARGO_BUILD_JOBS=2`, `CARGO_NET_OFFLINE=true`, and the
+verified acceptance inputs above. It exited **0** from 17:31:02 to 19:38:00 UTC
+on 18 October 2026: **2 h 6 m 58 s**. Log:
+`20261018T173102Z-3475880.log`, SHA-256
+`de6f9dd3556e381948e1e8e71b9b04205a4653fd7de1eb34e0f2c41b7daafff9`.
+The matching resource log is in the sibling `resources/` directory.
+
+All required groups passed: formatting, all-target compilation, acceptance and
+source/provenance gates, interfaces, stable storage, simplicity, frontend,
+unit tests, required PocketIC/SNS/Root groups, local integration, E2E, workspace
+tests, value-moving Wasm compilation and strict all-target/all-feature Clippy.
+Inside the aggregate, the full NNS recovery target passed 29/29 in 1,194.55 s;
+the full Stream target passed 24/24 in each of its three invocations
+(1,525.38, 1,519.29 and 1,519.58 s). No required group was skipped. Workspace
+tests retain 77 opt-in ignored registrations; the requested official runtime
+cases were separately executed above.
+
+The required security gate passed: cargo-deny, cargo-audit and duplicate-tree
+inspection completed successfully with `quinn-proto 0.11.18` and
+`rustls 0.23.46`. Four existing allowed unmaintained warnings remain; no new
+advisory exception was introduced. Serial runs used 8,325,529,600 bytes physical
+RAM, two CPUs, no swap and no finite applicable cgroup memory limit. No new
+OOM event or transport failure occurred; the historical OOM-kill counter stayed
+at 15. This does not attribute the older failures to OOM.
+
+Historical reproducibility passed: checked-in artifacts for recorded source
+`270dcf3dc71fc8e7b63c3177b0e3f58fc9246b35` equalled two isolated builds with
+different source and Cargo-cache paths. This does **not** establish a completed
+release or release reproducibility for the adoption source. Fresh current-source
+release artifacts and source-bound rehearsal evidence remain required. Historical
+packages were not rewritten; original browser, ignored generated and debug
+outputs were restored byte-for-byte, and release artifacts were unchanged.
+
+The separate official `lifecycle` profile is **BLOCKED / NOT RUN**: it requires
+a fresh owned topology and its authorized local workflow. No historical topology
+substitutes for that run. Final source/artifact and sale/metadata approval,
+canonical acceptance identities/controllers/supported subnet observations,
+authorized permanent full-neuron observation, actual Jupiter proposal-mirror
+and Vote-only integration, and independent audit/mainnet authorization remain
+external prerequisites. No mainnet operation or deployment is claimed.
+
+## Historical fcc rehearsal — 2026-09-14
 
 The complete local launch passed through `acceptance_sale_real`: real sale,
 A/B/C, reserve migration, capitalization, permanent refresh, initially registered
@@ -202,6 +331,11 @@ private-manifest 404. No schema or canister method is added or changed.
 
 `sns-source-baseline.json` is the single reviewed source-revision authority.
 Parser construction reads it; validators and the test driver compile it in.
+The official parser adapter explicitly disables automatic SNS target-version
+advancement in the typed Governance init payload. The same false value travels
+through the already-required post-sale parameter proposal with the neuron-cap
+change, and checkpoint C verifies the queried effective value. This is launch
+configuration only; it adds no IO runtime state, timer or method.
 Untrusted evidence cannot authorize another revision by repeating its hash.
 The reviewed friendly-parser hash and all six mandatory DID hashes/capability
 checks are enforced. Every cached DID also matches its Git blob at the reviewed

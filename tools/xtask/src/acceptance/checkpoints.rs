@@ -182,24 +182,31 @@ fn validate_raw_wasm(path: &Path, did: Option<&Path>, hidden: Option<&Path>) -> 
 }
 
 fn validate_sns_source(manifest: &io_sns_manifest::SnsManifest) -> Result<(), String> {
-    if manifest.value("variant", "scope") != Some("same-source")
-        || manifest.value("variant", "ic_commit") != Some(approved_sns_source())
-        || manifest.bool_value("variant", "source_tree_clean") != Some(true)
+    let approved = approved_sns_manifest();
+    if manifest.value("metadata", "version") != Some(approved_sns_framework())
+        || manifest.value("metadata", "latest_version_proposal_id")
+            != approved.value("metadata", "latest_version_proposal_id")
         || manifest.bool_value("capabilities", "latest_reward_event_participation") != Some(true)
     {
-        return Err("A requires the clean approved same-source reward-capable bundle".into());
+        return Err("A requires the reviewed official reward-capable SNS-W version".into());
     }
     for component in ["governance", "root", "ledger", "index", "swap", "archive"] {
-        if manifest.artifact(&format!("sns_{component}"), "source_commit")
-            != Some(approved_sns_source())
-        {
-            return Err(format!("{component} source mismatch"));
+        let artifact = format!("sns_{component}");
+        for manifest_field in ["upstream_rev", "sha256", "source_sha256"] {
+            if manifest.artifact(&artifact, manifest_field)
+                != approved.artifact(&artifact, manifest_field)
+            {
+                return Err(format!("{component} {manifest_field} mismatch"));
+            }
         }
-        if manifest
-            .value("contract", &format!("{component}_did_sha256"))
-            .is_none()
+        if manifest.artifact(&artifact, "source_kind")
+            != approved.artifact(&artifact, "source_kind")
+            || manifest.artifact(&artifact, "nns_proposal_id")
+                != approved.artifact(&artifact, "nns_proposal_id")
+            || manifest.value("contract", &format!("{component}_did_sha256"))
+                != approved.value("contract", &format!("{component}_did_sha256"))
         {
-            return Err(format!("required {component} DID binding missing"));
+            return Err(format!("{component} official provenance mismatch"));
         }
     }
     Ok(())
@@ -208,7 +215,8 @@ fn validate_sns_source(manifest: &io_sns_manifest::SnsManifest) -> Result<(), St
 fn validate_parser_binding(binding: &Value, adapter: &[u8], binary: &[u8]) -> Result<(), String> {
     if binding["ic_commit"] != approved_sns_source()
         || binding["ic_dirty"] != false
-        || binding["friendly_parser_sha256"] != approved_sns_baseline()["friendly_parser_sha256"]
+        || binding["friendly_parser_sha256"]
+            != approved_sns_baseline()["parser"]["friendly_parser_sha256"]
         || binding["adapter_sha256"] != hex::encode(Sha256::digest(adapter))
         || binding["binary_sha256"] != hex::encode(Sha256::digest(binary))
     {
@@ -299,8 +307,8 @@ pub(crate) fn checkpoint_a(root: &Path, dir: &Path) -> Result<Value, String> {
     }
     if context["local_fixture"] == false {
         let inputs: Value = read_json(root, &format!("{DIR}/required-inputs.draft.json"))?;
-        if inputs["final_sns_sale_commit"] != approved_sns_source() {
-            return Err("deployment sale source differs from verified pinned source".into());
+        if inputs["final_sns_framework_id"] != approved_sns_framework() {
+            return Err("deployment sale framework differs from verified reviewed version".into());
         }
         for component in ["governance", "root", "ledger", "index", "swap", "archive"] {
             if text(
@@ -421,8 +429,14 @@ pub(crate) fn checkpoint_a(root: &Path, dir: &Path) -> Result<Value, String> {
                 return Err(format!("stale or mismatched generated payload: {name}"));
             }
         }
+        let requirements = json_at(&outputs, "requirements.json")?;
+        if requirements["genesis_automatically_advance_target_version"] != false
+            || requirements["required_automatically_advance_target_version"] != false
+        {
+            return Err("generated Governance payload does not freeze SNS-W advancement".into());
+        }
         Ok(
-            json!({"checkpoint":"A", "local_fixture":context["local_fixture"], "source_commit":approved_sns_source(), "artifacts":hashes, "io_artifacts":io_artifacts,
+            json!({"checkpoint":"A", "local_fixture":context["local_fixture"], "sns_framework_id":approved_sns_framework(), "parser_source_commit":approved_sns_source(), "artifacts":hashes, "io_artifacts":io_artifacts,
             "post_sale_observations_required":false, "deployment_parameters_approved":context["local_fixture"] == false}),
         )
     })();
@@ -675,6 +689,9 @@ fn validate_capitalization(
         return Err("remaining IO installation authority mismatch".into());
     }
     let p = &c["effective_governance_parameters"];
+    if p["automatically_advance_target_version"] != false {
+        return Err("effective Governance automatic target advancement is not disabled".into());
+    }
     for (field, expected) in [
         ("max_number_of_neurons", 1000),
         ("reject_cost_e8s", 1_000_000_000),
@@ -751,32 +768,62 @@ mod tests {
     #[test]
     fn acceptance_source_and_parser_require_the_reviewed_baseline() {
         let mut source = io_sns_manifest::SnsManifest::parse(&format!(
-            "[variant]\nscope='same-source'\nic_commit='{}'\nsource_tree_clean=true\n[capabilities]\nlatest_reward_event_participation=true\n", approved_sns_source()
-        )).unwrap();
+            "[metadata]\nversion='{}'\nlatest_version_proposal_id='{}'\n[capabilities]\nlatest_reward_event_participation=true\n",
+            approved_sns_framework(),
+            approved_sns_manifest()
+                .value("metadata", "latest_version_proposal_id")
+                .unwrap()
+        ))
+        .unwrap();
         for component in ["governance", "root", "ledger", "index", "swap", "archive"] {
+            let artifact = format!("sns_{component}");
+            for manifest_field in ["upstream_rev", "sha256", "source_sha256"] {
+                source
+                    .set_artifact(
+                        &artifact,
+                        manifest_field,
+                        approved_sns_manifest()
+                            .artifact(&artifact, manifest_field)
+                            .unwrap(),
+                    )
+                    .unwrap();
+            }
             source
                 .set_artifact(
-                    &format!("sns_{component}"),
-                    "source_commit",
-                    approved_sns_source(),
+                    &artifact,
+                    "source_kind",
+                    approved_sns_manifest()
+                        .artifact(&artifact, "source_kind")
+                        .unwrap(),
+                )
+                .unwrap();
+            source
+                .set_artifact(
+                    &artifact,
+                    "nns_proposal_id",
+                    approved_sns_manifest()
+                        .artifact(&artifact, "nns_proposal_id")
+                        .unwrap(),
                 )
                 .unwrap();
             source
                 .set_value(
                     "contract",
                     &format!("{component}_did_sha256"),
-                    "a".repeat(64),
+                    approved_sns_manifest()
+                        .value("contract", &format!("{component}_did_sha256"))
+                        .unwrap(),
                 )
                 .unwrap();
         }
         validate_sns_source(&source).unwrap();
         for (section, key, value) in [
-            ("variant", "ic_commit", "0".repeat(40)),
-            ("variant", "source_tree_clean", "false".into()),
+            ("metadata", "version", String::from("unreviewed-version")),
+            ("metadata", "latest_version_proposal_id", String::from("0")),
             (
                 "capabilities",
                 "latest_reward_event_participation",
-                "false".into(),
+                String::from("false"),
             ),
         ] {
             let mut bad = source.clone();
@@ -784,18 +831,37 @@ mod tests {
             assert!(validate_sns_source(&bad).is_err());
         }
         for component in ["governance", "root", "ledger", "index", "swap", "archive"] {
+            for field in [
+                "upstream_rev",
+                "sha256",
+                "source_sha256",
+                "source_kind",
+                "nns_proposal_id",
+            ] {
+                let mut bad = source.clone();
+                bad.set_artifact(&format!("sns_{component}"), field, "0".repeat(64))
+                    .unwrap();
+                assert!(
+                    validate_sns_source(&bad).is_err(),
+                    "mismatched {component} {field} accepted"
+                );
+            }
             let mut bad = source.clone();
-            bad.set_artifact(&format!("sns_{component}"), "source_commit", "0".repeat(40))
-                .unwrap();
+            bad.set_value(
+                "contract",
+                &format!("{component}_did_sha256"),
+                "0".repeat(64),
+            )
+            .unwrap();
             assert!(
                 validate_sns_source(&bad).is_err(),
-                "mixed {component} source accepted"
+                "mismatched {component} DID accepted"
             );
         }
         let adapter = b"component adapter";
         let binary = b"component binary";
         let binding = json!({"ic_commit":approved_sns_source(),"ic_dirty":false,
-            "friendly_parser_sha256":approved_sns_baseline()["friendly_parser_sha256"],
+            "friendly_parser_sha256":approved_sns_baseline()["parser"]["friendly_parser_sha256"],
             "adapter_sha256":hex::encode(Sha256::digest(adapter)),"binary_sha256":hex::encode(Sha256::digest(binary))});
         validate_parser_binding(&binding, adapter, binary).unwrap();
         for key in [
@@ -817,11 +883,11 @@ mod tests {
         // Matching untrusted declarations do not promote a revision to approval.
         let mut bad_source = source.clone();
         bad_source
-            .set_value("variant", "ic_commit", "0".repeat(40))
+            .set_value("metadata", "version", "self-declared-official")
             .unwrap();
         for component in ["governance", "root", "ledger", "index", "swap", "archive"] {
             bad_source
-                .set_artifact(&format!("sns_{component}"), "source_commit", "0".repeat(40))
+                .set_artifact(&format!("sns_{component}"), "upstream_rev", "0".repeat(40))
                 .unwrap();
         }
         bad["ic_commit"] = json!("0".repeat(40));
@@ -939,7 +1005,8 @@ mod tests {
             "effective_governance_parameters":{"max_number_of_neurons":1000,"reject_cost_e8s":1_000_000_000,"neuron_minimum_stake_e8s":100_000_000,
                 "transaction_fee_e8s":10_000,"max_dissolve_delay_seconds":1_296_060,"neuron_minimum_dissolve_delay_to_vote_seconds":1_209_599,
                 "max_dissolve_delay_bonus_percentage":0,"max_age_bonus_percentage":0,"max_neuron_age_for_age_bonus":0,
-                "initial_voting_period_seconds":86_400,"wait_for_quiet_deadline_increase_seconds":43_200,"voting_rewards_parameters":{
+                "initial_voting_period_seconds":86_400,"wait_for_quiet_deadline_increase_seconds":43_200,
+                "automatically_advance_target_version":false,"voting_rewards_parameters":{
                     "round_duration_seconds":86_400,"reward_rate_transition_duration_seconds":0,"initial_reward_rate_basis_points":0,"final_reward_rate_basis_points":0}}});
         validate_capitalization(Path::new("."), &context, &b, &c).unwrap();
         for seed in [999_999_999_u64, 1_000_000_000, 1_000_000_001, 6_000_000_000] {
@@ -957,7 +1024,8 @@ mod tests {
             ("/effective_governance_parameters/reject_cost_e8s",json!(999_999_999)),
             ("/effective_governance_parameters/voting_rewards_parameters/round_duration_seconds",json!(43_200)),
             ("/effective_governance_parameters/voting_rewards_parameters/initial_reward_rate_basis_points",json!(1)),
-            ("/effective_governance_parameters/max_number_of_neurons",json!(200_000))] {
+            ("/effective_governance_parameters/max_number_of_neurons",json!(200_000)),
+            ("/effective_governance_parameters/automatically_advance_target_version",json!(true))] {
             let mut bad=c.clone();*bad.pointer_mut(pointer).unwrap()=replacement;
             assert!(validate_capitalization(Path::new("."),&context,&b,&bad).is_err(),"accepted mutation {pointer}");
         }

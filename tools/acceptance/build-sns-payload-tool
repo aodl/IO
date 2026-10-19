@@ -16,7 +16,7 @@ if len(sys.argv) != 3:
 ic = pathlib.Path(sys.argv[1]).resolve()
 out = pathlib.Path(sys.argv[2]).resolve()
 baseline = pathlib.Path(__file__).resolve().parents[2] / 'deploy/acceptance/sns-source-baseline.json'
-pin = json.loads(baseline.read_text())['commit']
+pin = json.loads(baseline.read_text())['parser']['commit']
 head = subprocess.check_output(['git', '-C', str(ic), 'rev-parse', 'HEAD'], text=True).strip()
 if head != pin or subprocess.check_output(['git', '-C', str(ic), 'status', '--porcelain']):
     sys.exit('requires the clean pinned IC source')

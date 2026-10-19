@@ -48,6 +48,7 @@ struct Mode {
 }
 #[derive(CandidType, Deserialize, serde::Serialize)]
 struct EffectiveParameters {
+    automatically_advance_target_version: Option<bool>,
     max_number_of_neurons: Option<u64>,
     reject_cost_e8s: Option<u64>,
     neuron_minimum_stake_e8s: Option<u64>,

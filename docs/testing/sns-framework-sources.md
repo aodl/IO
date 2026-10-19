@@ -54,15 +54,27 @@ caches remain outside the IO worktree and must not be committed.
 ## Official source
 
 Official mode reads `tests/e2e_real_canisters/wasms.example.toml`. That reviewed
-lock pins component revisions, artifact URLs, compressed and raw hashes, and
-test-orchestration capability metadata. A normal run never edits the lock and
-never searches for a moving latest release. An official result is only as
-current as the checked-in reviewed lock.
+lock pins the coherent SNS-W version after executed NNS proposal 144202. Each
+component is bound by its publication proposal, source revision, artifact URL,
+compressed and raw hashes, and embedded DID hash. The resolver extracts and
+checks source and DID metadata from the downloaded Wasm itself. A normal run
+never edits the lock and never searches for a moving latest release. An
+official result is only as current as the checked-in reviewed lock.
+The lock's `io-official-sns-w-version-after-144202-2026-10-05` version string is
+an IO-local frozen-tuple label, not a canonical SNS-W or network identifier.
+
+The lock also retains the immediately preceding blessed Governance release as
+the test-only input to the existing official-to-official upgrade regression.
+It is not part of the selected six-component deployment tuple.
 
 When artifacts are absent from the external cache, the runner uses the existing
 allowlisted, hash-verifying fetch script. `--official-manifest` can test a
 separately prepared proposed lock without editing the repository; the runner
-does not create or bless that proposal.
+does not create or bless that proposal. The checked-in active lock additionally
+requires all six publication proposal IDs and embedded DID hashes. Historical
+compatibility-only official locks remain usable without those newer metadata
+fields; the upgrade profile separately requires an exact predecessor
+Governance artifact.
 
 ## Local component overlay
 
@@ -79,7 +91,10 @@ source commit:
 The candidate Governance Wasm and DID replace Governance in the official base.
 The `governance-root` scope also replaces Root and hash-binds its DID; all other
 artifacts remain byte-for-byte official. A requested local component build is
-never silently replaced with its official baseline.
+never silently replaced with its official baseline. Each overridden component
+drops the baseline component's NNS publication proposal ID, because that
+proposal did not publish the locally built bytes; unchanged components retain
+their official proposal provenance.
 
 The `same-source` scope requires a clean checkout and builds all six SNS
 components (Governance, Root, Ledger, Index, Swap and Archive), binding their
@@ -153,10 +168,11 @@ skipped events.
 
 - `contract` validates the resolved bundle, runs the complete
   `io-sns-reward-boundary` unit suite, enforces the exact additive DTO test, and
-  requires the exact candidate Governance contract test when the capability is
+  requires the exact capability-bearing Governance contract test when the capability is
   present.
 - `io` runs contract coverage plus the installed IO reward path.
-- `upgrade` runs the exact official-to-candidate Governance upgrade test.
+- `upgrade` runs the existing exact prior-official-to-selected-official
+  Governance upgrade test.
 - `lifecycle` invokes the existing rehearsal phases 10–17 in a unique external
   run directory, reruns the ledger and index phases after Governance activation,
   and preserves their restart markers. Bootstrap, build, deployment, every

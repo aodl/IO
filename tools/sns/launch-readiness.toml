@@ -50,8 +50,8 @@ status = "complete"
 evidence = "The historical one-component candidate-Governance/official-Root unit_variant incompatibility is superseded by locally proved same-source candidate Governance/Root compatibility. Proposal 4 proved one authentic hash-changing historian upgrade through SNS Governance and Root while preserving the sole Root controller. Same-Wasm monetary-canister upgrade coverage is separate; this field does not claim every dapp revision pair was proposed."
 
 [official_reward_share_release]
-status = "incomplete"
-evidence = "Source-built SNS revision 4320fdf2e613844eabae1927b1a23b98da3a7bc6 locally proved same-source candidate Governance/Root compatibility and latest_reward_event_participation. The separately reviewed official artifact lock remains Governance revision b904c9dd1bdef8841bd12f03efbc71180a015e25 and does not contain that capability. Launch requires an official reviewed SNS Governance release containing the capability, refreshed exact official Wasm/DID pins, and rerun official contract/io/upgrade/lifecycle evidence without treating the local source-built revision as official adoption."
+status = "complete"
+evidence = "Executed NNS proposal 144202 published SNS Governance revision 98c898f8de068a1fc0e97ebc805f9fa7f315d862 with latest_reward_event_participation. The reviewed official lock selects the coherent SNS-W version after that proposal and binds all six publication proposals, source revisions, compressed/raw Wasm hashes and embedded DID hashes. Required official contract/io/upgrade/lifecycle and real-acceptance execution are separate evidence gates, and final deployment-source approval remains incomplete."
 
 [frontend_sns_integration_tested]
 status = "incomplete"

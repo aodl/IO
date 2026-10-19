@@ -189,10 +189,13 @@ rehearsal item. A fresh authorized rehearsal must prove the fixed Account,
 discovery-only scanner, canonical proof, payout and sweep recovery. Earlier
 packages remain historical and were not rebound.
 
-Completed local proof does not prove official SNS reward-share release adoption.
-Source-built revision `4320fdf2e613844eabae1927b1a23b98da3a7bc6`
-contains and locally proves the capability, while the separately reviewed
-official lock remains `b904c9dd1bdef8841bd12f03efbc71180a015e25`.
+Completed historical local proof does not prove the active official acceptance
+rehearsal. Executed NNS proposal 144202 published Governance revision
+`98c898f8de068a1fc0e97ebc805f9fa7f315d862` with the capability, and the
+reviewed official lock binds the coherent SNS-W version after that proposal.
+The historical source-built package remains evidence only for its own bytes;
+official contract/IO/upgrade/lifecycle and active acceptance results are
+recorded separately.
 Final SNS configuration/tokenomics/controllers, external audit, protected
 mainnet review, mainnet testflight and activation also remain unproved.
 

@@ -1,8 +1,8 @@
 {
-  "schema": "io.acceptance.sale-contract.v1",
+  "schema": "io.acceptance.sale-contract.v2",
   "status": "planned-small-sale",
-  "reviewed_reward_share_baseline": "fcc281f7200a8d3192ec46c225b436b2096bbf58",
-  "same_source_components_required": [
+  "reviewed_sns_framework_id": "io-official-sns-w-version-after-144202-2026-10-05",
+  "official_version_components_required": [
     "Governance",
     "Root",
     "Ledger",

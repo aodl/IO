@@ -165,6 +165,33 @@ impl SnsManifest {
         Ok(())
     }
 
+    pub fn remove_artifact(&mut self, component: &str, field: &str) -> Result<(), String> {
+        let nested_field = if field == "wasm" { "filename" } else { field };
+        let legacy_field = if matches!(field, "filename" | "wasm") {
+            format!("{component}_wasm")
+        } else {
+            format!("{component}_{field}")
+        };
+        let root = self
+            .document
+            .as_table_mut()
+            .ok_or_else(|| "manifest root must be a TOML table".to_string())?;
+        if let Some(artifacts) = root.get_mut("artifacts") {
+            let artifacts = artifacts
+                .as_table_mut()
+                .ok_or_else(|| "manifest section [artifacts] must be a table".to_string())?;
+            if let Some(component) = artifacts
+                .get_mut(component)
+                .and_then(toml::Value::as_table_mut)
+            {
+                component.remove(nested_field);
+            }
+            artifacts.remove(&legacy_field);
+        }
+        root.remove(&legacy_field);
+        Ok(())
+    }
+
     pub fn set_value(
         &mut self,
         section: &str,
@@ -230,6 +257,30 @@ mod tests {
             manifest.artifact("sns_governance", "source_url"),
             Some("local://candidate/path#not-a-comment")
         );
+    }
+
+    #[test]
+    fn removing_artifact_metadata_clears_nested_and_legacy_forms() {
+        for text in [
+            r#"[artifacts.sns_governance]
+nns_proposal_id = "144202"
+"#,
+            r#"[artifacts]
+sns_governance_nns_proposal_id = "144202"
+"#,
+            r#"sns_governance_nns_proposal_id = "144202"
+"#,
+        ] {
+            let mut manifest = SnsManifest::parse(text).unwrap();
+            assert_eq!(
+                manifest.artifact("sns_governance", "nns_proposal_id"),
+                Some("144202")
+            );
+            manifest
+                .remove_artifact("sns_governance", "nns_proposal_id")
+                .unwrap();
+            assert_eq!(manifest.artifact("sns_governance", "nns_proposal_id"), None);
+        }
     }
 
     #[test]

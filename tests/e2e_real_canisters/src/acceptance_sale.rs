@@ -26,12 +26,60 @@ struct LedgerTip {
     chain_length: u64,
 }
 
-fn approved_sns_source() -> String {
-    let baseline: Value = serde_json::from_str(include_str!(
+fn approved_sns_baseline() -> Value {
+    serde_json::from_str(include_str!(
         "../../../deploy/acceptance/sns-source-baseline.json"
     ))
-    .unwrap();
-    baseline["commit"].as_str().unwrap().into()
+    .unwrap()
+}
+
+fn approved_sns_manifest() -> io_sns_manifest::SnsManifest {
+    io_sns_manifest::SnsManifest::parse(include_str!("../wasms.example.toml")).unwrap()
+}
+
+fn assert_approved_sns_bundle(manifest: &io_sns_manifest::SnsManifest) {
+    let baseline = approved_sns_baseline();
+    let approved = approved_sns_manifest();
+    assert_eq!(
+        manifest.value("metadata", "version"),
+        approved.value("metadata", "version")
+    );
+    assert_eq!(
+        manifest.value("metadata", "latest_version_proposal_id"),
+        approved.value("metadata", "latest_version_proposal_id")
+    );
+    assert_eq!(
+        manifest.bool_value("capabilities", "latest_reward_event_participation"),
+        Some(true)
+    );
+    for component in ["governance", "root", "ledger", "index", "swap", "archive"] {
+        let artifact = format!("sns_{component}");
+        for manifest_field in ["upstream_rev", "sha256", "source_sha256"] {
+            assert_eq!(
+                manifest.artifact(&artifact, manifest_field),
+                approved.artifact(&artifact, manifest_field),
+                "{component} {manifest_field}"
+            );
+        }
+        assert_eq!(
+            manifest.artifact(&artifact, "source_kind"),
+            approved.artifact(&artifact, "source_kind")
+        );
+        assert_eq!(
+            manifest.artifact(&artifact, "nns_proposal_id"),
+            approved.artifact(&artifact, "nns_proposal_id"),
+            "{component} NNS proposal"
+        );
+        assert_eq!(
+            manifest.value("contract", &format!("{component}_did_sha256")),
+            approved.value("contract", &format!("{component}_did_sha256")),
+            "{component} DID"
+        );
+    }
+    assert_eq!(
+        baseline["framework_id"].as_str(),
+        approved.value("metadata", "version")
+    );
 }
 const SALE: u64 = 300_000_000;
 const TOTAL: u64 = 100_000_000_000_000_000;
@@ -184,10 +232,7 @@ impl Sale {
         else {
             panic!("required artifact set missing")
         };
-        assert_eq!(
-            artifacts.manifest.value("variant", "scope"),
-            Some("same-source")
-        );
+        assert_approved_sns_bundle(&artifacts.manifest);
         for key in [
             "sns_governance",
             "sns_root",
@@ -196,10 +241,6 @@ impl Sale {
             "sns_swap",
             "sns_archive",
         ] {
-            assert_eq!(
-                artifacts.manifest.artifact(key, "source_commit"),
-                Some(approved_sns_source().as_str())
-            );
             artifacts.load_required(key).unwrap();
             artifacts.load_required_source_wasm_gz(key).unwrap();
         }
@@ -297,6 +338,16 @@ impl Sale {
                 .unwrap()
                 .success(),
             "pinned parser/builder rejected generated config"
+        );
+        let governance_init: gov::Governance =
+            decode_one(&fs::read(payloads.join("governance.bin")).unwrap()).unwrap();
+        assert_eq!(
+            governance_init
+                .parameters
+                .as_ref()
+                .and_then(|parameters| parameters.automatically_advance_target_version),
+            Some(false),
+            "the frozen self-deployed SNS must not follow later SNS-W targets"
         );
         let mut baseline = serde_json::Map::new();
         for (name, id) in [
@@ -731,7 +782,7 @@ struct IcpBalance {
 }
 
 #[test]
-#[ignore = "requires pinned same-source SNS bundle, parser tool and PocketIC"]
+#[ignore = "requires reviewed official SNS-W bundle, parser tool and PocketIC"]
 fn self_deployed_sale_finalizes_and_migrates_reserve() {
     let sale = Sale::new();
     sale.finish();
@@ -843,7 +894,7 @@ fn unauthorized(response: gov::ManageNeuronResponse) {
 }
 
 #[test]
-#[ignore = "requires pinned same-source SNS bundle, parser tool and PocketIC"]
+#[ignore = "requires reviewed official SNS-W bundle, parser tool and PocketIC"]
 fn real_operator_30_io_proposer_fees() {
     let sale = Sale::new();
     sale.finish();
@@ -864,9 +915,10 @@ fn real_operator_30_io_proposer_fees() {
     assert_eq!(sale.neuron(sale.operator, OPERATOR_MEMO).neuron_fees_e8s, 0);
     // Standard capacity update before IO install, never a fixture-only override.
     let capacity = proposal_id(sale.propose(
-        "Local IO canonical neuron capacity",
+        "Local IO canonical Governance parameters",
         gov::Action::ManageNervousSystemParameters(Box::new(gov::NervousSystemParameters {
             max_number_of_neurons: Some(1_000),
+            automatically_advance_target_version: Some(false),
             ..Default::default()
         })),
     ));
@@ -879,6 +931,7 @@ fn real_operator_30_io_proposer_fees() {
         (),
     );
     assert_eq!(parameters.max_number_of_neurons, Some(1_000));
+    assert_eq!(parameters.automatically_advance_target_version, Some(false));
     for count in 1..=3 {
         let id = proposal_id(sale.motion(&format!("Local rejected proposal {count}")));
         assert_eq!(
@@ -912,7 +965,7 @@ fn real_operator_30_io_proposer_fees() {
 }
 
 #[test]
-#[ignore = "requires pinned same-source SNS bundle, parser tool and PocketIC"]
+#[ignore = "requires reviewed official SNS-W bundle, parser tool and PocketIC"]
 fn real_jupiter_canister_exact_vote_only_permissions() {
     let sale = Sale::new();
     sale.finish();
@@ -1257,7 +1310,8 @@ impl Sale {
                 permission_type: vec![4]
             }]
         );
-        // Required capacity is applied through a standard, actually adopted proposal.
+        // Required capacity and the frozen-version policy are applied through
+        // one standard, actually adopted proposal.
         let required: gov::NervousSystemParameters = decode_one(
             &fs::read(
                 self.evidence
@@ -1284,13 +1338,15 @@ impl Sale {
         )
         .unwrap();
         let p = &parameters;
+        assert_eq!(p.automatically_advance_target_version, Some(false));
         let r = p.voting_rewards_parameters.as_ref().unwrap();
         let params = json!({"max_number_of_neurons":p.max_number_of_neurons,"reject_cost_e8s":p.reject_cost_e8s,
             "neuron_minimum_stake_e8s":p.neuron_minimum_stake_e8s,"transaction_fee_e8s":p.transaction_fee_e8s,
             "max_dissolve_delay_seconds":p.max_dissolve_delay_seconds,"neuron_minimum_dissolve_delay_to_vote_seconds":p.neuron_minimum_dissolve_delay_to_vote_seconds,
             "max_dissolve_delay_bonus_percentage":p.max_dissolve_delay_bonus_percentage,"max_age_bonus_percentage":p.max_age_bonus_percentage,
             "max_neuron_age_for_age_bonus":p.max_neuron_age_for_age_bonus,"initial_voting_period_seconds":p.initial_voting_period_seconds,
-            "wait_for_quiet_deadline_increase_seconds":p.wait_for_quiet_deadline_increase_seconds,"voting_rewards_parameters":{
+            "wait_for_quiet_deadline_increase_seconds":p.wait_for_quiet_deadline_increase_seconds,
+            "automatically_advance_target_version":p.automatically_advance_target_version,"voting_rewards_parameters":{
                 "round_duration_seconds":r.round_duration_seconds,"reward_rate_transition_duration_seconds":r.reward_rate_transition_duration_seconds,
                 "initial_reward_rate_basis_points":r.initial_reward_rate_basis_points,"final_reward_rate_basis_points":r.final_reward_rate_basis_points}});
         let balance = |account: Account| -> u64 {
@@ -2005,7 +2061,7 @@ struct RootSettings {
 }
 
 #[test]
-#[ignore = "requires current-source IO Wasms, pinned same-source SNS bundle, parser tool and PocketIC"]
+#[ignore = "requires current-source IO Wasms, reviewed official SNS-W bundle, parser tool and PocketIC"]
 fn real_launch_checkpoints_a_b_c() {
     let sale = Sale::with_initial_registration(true);
     sale.finish();
@@ -2045,7 +2101,7 @@ fn mutation(dir: &Path, file: &str, pointer: &str, replacement: Value, mode: &st
 }
 
 #[test]
-#[ignore = "requires pinned same-source SNS bundle, parser tool and PocketIC"]
+#[ignore = "requires reviewed official SNS-W bundle, parser tool and PocketIC"]
 fn real_checkpoint_c_negative_cases() {
     let sale = Sale::with_initial_registration(true);
     sale.finish();
@@ -2059,7 +2115,7 @@ fn real_checkpoint_c_negative_cases() {
 }
 
 #[test]
-#[ignore = "requires pinned same-source SNS bundle, parser tool and PocketIC"]
+#[ignore = "requires reviewed official SNS-W bundle, parser tool and PocketIC"]
 fn real_checkpoint_a_b_negative_cases() {
     let sale = Sale::new();
     let d = &sale.evidence;

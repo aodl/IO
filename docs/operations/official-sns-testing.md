@@ -44,12 +44,15 @@ not presented as a live-local observation.
 
 The repository validator `cargo run -p xtask -- validate_local_sns_rehearsal` is no-network and may run in normal checks. `cargo run -p xtask -- validate_local_sns_ledger` validates the selector-bound current package and is green for the current release. A future rehearsal still uses an ignored run-local inventory and may become selectable only after a new immutable package validates; it does not overwrite or rebind the current or historical packages.
 
-Source-built revision `4320fdf2e613844eabae1927b1a23b98da3a7bc6`
-locally proved `latest_reward_event_participation`. The separately reviewed
-official artifact lock remains Governance revision
-`b904c9dd1bdef8841bd12f03efbc71180a015e25`; local source proof is not official
-release adoption. Launch still requires a reviewed official release containing
-the capability and refreshed official artifact and DID pins.
+NNS proposal 144202 executed the publication of Governance revision
+`98c898f8de068a1fc0e97ebc805f9fa7f315d862`, which includes
+`latest_reward_event_participation`. The reviewed official lock selects the
+coherent SNS-W version after that proposal and binds all six component
+publications, raw/compressed Wasms and embedded DIDs. Source-built revision
+`4320fdf2e613844eabae1927b1a23b98da3a7bc6` and the fcc acceptance bundle remain
+historical candidate evidence. Official contract, IO, upgrade, lifecycle and
+real acceptance execution results are recorded separately; artifact selection
+alone does not claim those tests or final deployment-source approval.
 
 The issuance model under this layer is protocol reserve transfer. The
 standalone rehearsal proves reserve-to-user and exact user-to-reserve ICRC-1

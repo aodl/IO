@@ -14,6 +14,7 @@ const OFFICIAL_LOCK: &str = "tests/e2e_real_canisters/wasms.example.toml";
 const GOVERNANCE_DID: &str = "rs/sns/governance/canister/governance.did";
 const ROOT_DID: &str = "rs/sns/root/canister/root.did";
 const CAPABILITY_FIELD: &str = "latest_reward_event_participation";
+const OFFICIAL_GOVERNANCE_BASELINE: &str = "sns_governance_baseline";
 
 const ALL_ARTIFACTS: &[&str] = &[
     "sns_ledger",
@@ -31,6 +32,15 @@ const ALL_ARTIFACTS: &[&str] = &[
     "cmc",
     "icp_ledger",
     "icp_index",
+];
+
+const SNS_VERSION_COMPONENTS: &[(&str, &str)] = &[
+    ("governance", "sns_governance"),
+    ("root", "sns_root"),
+    ("ledger", "sns_ledger"),
+    ("index", "sns_index"),
+    ("swap", "sns_swap"),
+    ("archive", "sns_archive"),
 ];
 
 const GOVERNANCE_TARGET: &str = "//rs/sns/governance:sns-governance-canister";
@@ -384,6 +394,15 @@ fn resolve_official_bundle(
         .map_err(|error| format!("failed to read {}: {error}", official_lock.display()))?;
     let lock = SnsManifest::parse(&lock_text)?;
     validate_official_lock(&lock)?;
+    if official_lock
+        == fs::canonicalize(io_root.join(OFFICIAL_LOCK))
+            .map_err(|error| format!("failed to resolve active official SNS lock: {error}"))?
+    {
+        validate_active_official_lock(&lock)?;
+    }
+    if options.profile == Profile::Upgrade {
+        validate_official_upgrade_input(&lock)?;
+    }
     let baseline = required_value(&lock, "metadata", "version")?.to_string();
     let lock_hash = sha256(lock_text.as_bytes());
     let id = format!("official-{}-{}", safe_id(&baseline), &lock_hash[..16]);
@@ -434,6 +453,20 @@ fn prepare_official_bundle(
             format!("{component}-{basename}"),
         )?;
     }
+    if lock.has_artifact(OFFICIAL_GOVERNANCE_BASELINE) {
+        let baseline_source_url =
+            required_artifact(lock, OFFICIAL_GOVERNANCE_BASELINE, "source_url")?;
+        let baseline_source_basename = baseline_source_url
+            .rsplit('/')
+            .next()
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "official Governance baseline source URL has no filename".to_string())?;
+        resolved.set_artifact(
+            OFFICIAL_GOVERNANCE_BASELINE,
+            "source_filename",
+            format!("{OFFICIAL_GOVERNANCE_BASELINE}-{baseline_source_basename}"),
+        )?;
+    }
     let resolved_text = resolved.to_toml()?;
     let fetch_manifest = staging.join("fetch-manifest.toml");
     fs::write(&fetch_manifest, &resolved_text)
@@ -454,24 +487,91 @@ fn prepare_official_bundle(
             "official fetch completed without every verified raw and compressed artifact".into(),
         );
     }
-    if lock.bool_value("capabilities", CAPABILITY_FIELD) == Some(true) {
-        let did_source = canonical_or_join(
-            io_root,
-            Path::new(required_value(lock, "contract", "governance_did")?),
+    if resolved.has_artifact(OFFICIAL_GOVERNANCE_BASELINE) {
+        let baseline_wasm_name =
+            required_artifact(&resolved, OFFICIAL_GOVERNANCE_BASELINE, "wasm")?.to_string();
+        let baseline_wasm = wasms.join(&baseline_wasm_name);
+        let baseline_raw_hash =
+            required_artifact(&resolved, OFFICIAL_GOVERNANCE_BASELINE, "sha256")?.to_string();
+        let baseline_source_hash =
+            required_artifact(&resolved, OFFICIAL_GOVERNANCE_BASELINE, "source_sha256")?
+                .to_string();
+        verify_hash(&baseline_wasm, &baseline_raw_hash)?;
+        let baseline_source_name = resolved.source_artifact_name(OFFICIAL_GOVERNANCE_BASELINE)?;
+        verify_hash(&wasms.join(&baseline_source_name), &baseline_source_hash)?;
+        let baseline_revision =
+            required_artifact(&resolved, OFFICIAL_GOVERNANCE_BASELINE, "upstream_rev")?.to_string();
+        let embedded_baseline_revision = command_output(
+            Command::new("ic-wasm")
+                .arg(&baseline_wasm)
+                .args(["metadata", "git_commit_id"]),
         )?;
-        if !did_source.starts_with(io_root) {
-            return Err("official Governance DID must resolve inside the IO repository".into());
+        if embedded_baseline_revision.trim() != baseline_revision {
+            return Err(format!(
+                "official Governance baseline embedded source revision mismatch: expected {baseline_revision}, got {:?}",
+                embedded_baseline_revision.trim()
+            ));
         }
-        verify_hash(
-            &did_source,
-            required_value(lock, "contract", "governance_did_sha256")?,
+        resolved.set_value("baseline", "sns_governance_wasm", &baseline_wasm_name)?;
+        resolved.set_value("baseline", "sns_governance_sha256", &baseline_raw_hash)?;
+        resolved.set_value(
+            "baseline",
+            "sns_governance_source_wasm",
+            &baseline_source_name,
         )?;
-        let did_text = fs::read_to_string(&did_source)
-            .map_err(|err| format!("failed to read {}: {err}", did_source.display()))?;
-        verify_candidate_did(&did_text)?;
-        fs::copy(&did_source, staging.join("governance.did"))
-            .map_err(|err| format!("failed to copy reviewed Governance DID: {err}"))?;
+        resolved.set_value(
+            "baseline",
+            "sns_governance_source_sha256",
+            &baseline_source_hash,
+        )?;
+        resolved.set_value("baseline", "sns_governance_revision", &baseline_revision)?;
     }
+    for (component, artifact) in SNS_VERSION_COMPONENTS {
+        let wasm = wasms.join(required_artifact(&resolved, artifact, "wasm")?);
+        let embedded_revision = command_output(
+            Command::new("ic-wasm")
+                .arg(&wasm)
+                .args(["metadata", "git_commit_id"]),
+        )?;
+        let expected_revision = required_artifact(&resolved, artifact, "upstream_rev")?;
+        if embedded_revision.trim() != expected_revision {
+            return Err(format!(
+                "official {component} embedded source revision mismatch: expected {expected_revision}, got {:?}",
+                embedded_revision.trim()
+            ));
+        }
+
+        let Some(expected_did_hash) = resolved
+            .value("contract", &format!("{component}_did_sha256"))
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        let mut did = command_bytes(
+            Command::new("ic-wasm")
+                .arg(&wasm)
+                .args(["metadata", "candid:service"]),
+        )?;
+        if sha256(&did) != expected_did_hash && did.ends_with(b"\n") {
+            // ic-wasm prints one presentation newline after the exact custom
+            // section. Remove only that byte, and only accept the reviewed hash.
+            did.pop();
+        }
+        if sha256(&did) != expected_did_hash {
+            return Err(format!(
+                "official {component} embedded DID hash mismatch: expected {expected_did_hash}, got {}",
+                sha256(&did)
+            ));
+        }
+        if *component == "governance" {
+            verify_candidate_did(std::str::from_utf8(&did).map_err(|error| {
+                format!("official Governance embedded DID is not UTF-8: {error}")
+            })?)?;
+        }
+        fs::write(staging.join(format!("{component}.did")), did)
+            .map_err(|err| format!("failed to write reviewed {component} DID: {err}"))?;
+    }
+    let resolved_text = resolved.to_toml()?;
     fs::write(staging.join("manifest.toml"), &resolved_text)
         .map_err(|err| format!("failed to write resolved manifest: {err}"))?;
     let provenance = format!(
@@ -528,6 +628,17 @@ fn resolve_local_overlay(
     fs::create_dir(&wasms).map_err(|err| format!("failed to create {}: {err}", wasms.display()))?;
 
     copy_manifest_artifacts(&lock, &official.wasm_dir, &wasms)?;
+    let official_root = official
+        .manifest
+        .parent()
+        .ok_or_else(|| "official manifest has no parent".to_string())?;
+    for (component, _) in SNS_VERSION_COMPONENTS {
+        let source = official_root.join(format!("{component}.did"));
+        if source.is_file() {
+            fs::copy(&source, staging.join(format!("{component}.did")))
+                .map_err(|err| format!("failed to retain official {component} DID: {err}"))?;
+        }
+    }
     let official_governance_name = required_artifact(&lock, "sns_governance", "wasm")?;
     fs::copy(
         official.wasm_dir.join(official_governance_name),
@@ -597,6 +708,7 @@ fn resolve_local_overlay(
         resolved.set_artifact(component, "source_commit", &provenance.head)?;
         resolved.set_artifact(component, "build_target", *target)?;
         resolved.set_artifact(component, "upstream_rev", &provenance.head)?;
+        resolved.remove_artifact(component, "nns_proposal_id")?;
         overrides.push((*component).to_string());
     }
 
@@ -1930,15 +2042,76 @@ fn validate_official_lock(lock: &SnsManifest) -> Result<(), String> {
     }
     match lock.bool_value("capabilities", CAPABILITY_FIELD) {
         Some(true) => {
-            let path = required_value(lock, "contract", "governance_did")?;
-            reject_relative_unsafe(Path::new(path))?;
-            validate_sha(required_value(lock, "contract", "governance_did_sha256")?)
+            validate_sha(required_value(lock, "contract", "governance_did_sha256")?)?;
+            if let Some(path) = lock.value("contract", "governance_did") {
+                reject_relative_unsafe(Path::new(path))?;
+            }
+            Ok(())
         }
         Some(false) => Ok(()),
         _ => Err(format!(
             "official lock must declare [capabilities].{CAPABILITY_FIELD} as a boolean"
         )),
     }
+}
+
+fn validate_official_upgrade_input(lock: &SnsManifest) -> Result<(), String> {
+    let filename = required_artifact(lock, OFFICIAL_GOVERNANCE_BASELINE, "wasm")?;
+    validate_artifact_filename(filename)?;
+    validate_sha(required_artifact(
+        lock,
+        OFFICIAL_GOVERNANCE_BASELINE,
+        "sha256",
+    )?)?;
+    validate_sha(required_artifact(
+        lock,
+        OFFICIAL_GOVERNANCE_BASELINE,
+        "source_sha256",
+    )?)?;
+    let url = required_artifact(lock, OFFICIAL_GOVERNANCE_BASELINE, "source_url")?;
+    if !url.starts_with("https://download.dfinity.systems/")
+        && !url.starts_with("https://github.com/")
+    {
+        return Err(format!(
+            "official Governance baseline has unapproved source URL {url}"
+        ));
+    }
+    let revision = required_artifact(lock, OFFICIAL_GOVERNANCE_BASELINE, "upstream_rev")?;
+    if revision.len() != 40 || !revision.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("official Governance baseline revision is not full 40-hex".into());
+    }
+    if let Some(proposal_id) = lock.artifact(OFFICIAL_GOVERNANCE_BASELINE, "nns_proposal_id") {
+        proposal_id
+            .parse::<u64>()
+            .map_err(|_| "official Governance baseline NNS proposal ID is invalid".to_string())?;
+    }
+    Ok(())
+}
+
+fn validate_active_official_lock(lock: &SnsManifest) -> Result<(), String> {
+    if lock.bool_value("capabilities", CAPABILITY_FIELD) != Some(true) {
+        return Err(format!(
+            "active official SNS lock must provide required capability {CAPABILITY_FIELD}"
+        ));
+    }
+    validate_official_upgrade_input(lock)?;
+    required_artifact(lock, OFFICIAL_GOVERNANCE_BASELINE, "nns_proposal_id")?
+        .parse::<u64>()
+        .map_err(|_| "official Governance baseline NNS proposal ID is invalid".to_string())?;
+    for (component, artifact) in SNS_VERSION_COMPONENTS {
+        validate_sha(required_value(
+            lock,
+            "contract",
+            &format!("{component}_did_sha256"),
+        )?)?;
+        required_artifact(lock, artifact, "nns_proposal_id")?
+            .parse::<u64>()
+            .map_err(|_| format!("official {component} NNS proposal ID is invalid"))?;
+    }
+    required_value(lock, "metadata", "latest_version_proposal_id")?
+        .parse::<u64>()
+        .map_err(|_| "official latest-version proposal ID is invalid".to_string())?;
+    Ok(())
 }
 
 pub(crate) fn validate_bundle(root: &Path) -> Result<(), String> {
@@ -2050,6 +2223,22 @@ pub(crate) fn validate_bundle(root: &Path) -> Result<(), String> {
             required_artifact(&manifest, component, "source_sha256")?,
         )?;
     }
+    if manifest.has_artifact(OFFICIAL_GOVERNANCE_BASELINE) {
+        let filename = required_artifact(&manifest, OFFICIAL_GOVERNANCE_BASELINE, "wasm")?;
+        validate_artifact_filename(filename)?;
+        expected_wasms.insert(filename.to_string());
+        verify_hash(
+            &wasms.join(filename),
+            required_artifact(&manifest, OFFICIAL_GOVERNANCE_BASELINE, "sha256")?,
+        )?;
+        let source_name = manifest.source_artifact_name(OFFICIAL_GOVERNANCE_BASELINE)?;
+        validate_artifact_filename(&source_name)?;
+        expected_wasms.insert(source_name.clone());
+        verify_hash(
+            &wasms.join(source_name),
+            required_artifact(&manifest, OFFICIAL_GOVERNANCE_BASELINE, "source_sha256")?,
+        )?;
+    }
     if let Some(baseline_name) = manifest.value("baseline", "sns_governance_wasm") {
         validate_artifact_filename(baseline_name)?;
         expected_wasms.insert(baseline_name.to_string());
@@ -2153,6 +2342,28 @@ fn copy_manifest_artifacts(
         verify_hash(
             &source_path,
             required_artifact(manifest, component, "source_sha256")?,
+        )?;
+        fs::copy(&source_path, destination.join(&source_name)).map_err(|err| {
+            format!(
+                "failed to copy source artifact {}: {err}",
+                source_path.display()
+            )
+        })?;
+    }
+    if manifest.has_artifact(OFFICIAL_GOVERNANCE_BASELINE) {
+        let filename = required_artifact(manifest, OFFICIAL_GOVERNANCE_BASELINE, "wasm")?;
+        let from = source.join(filename);
+        verify_hash(
+            &from,
+            required_artifact(manifest, OFFICIAL_GOVERNANCE_BASELINE, "sha256")?,
+        )?;
+        fs::copy(&from, destination.join(filename))
+            .map_err(|err| format!("failed to copy {}: {err}", from.display()))?;
+        let source_name = manifest.source_artifact_name(OFFICIAL_GOVERNANCE_BASELINE)?;
+        let source_path = source.join(&source_name);
+        verify_hash(
+            &source_path,
+            required_artifact(manifest, OFFICIAL_GOVERNANCE_BASELINE, "source_sha256")?,
         )?;
         fs::copy(&source_path, destination.join(&source_name)).map_err(|err| {
             format!(
@@ -2608,6 +2819,54 @@ mod tests {
             service : { get_latest_reward_event : () -> (RewardEvent) query; list_neurons : (ListNeurons) -> (ListNeuronsResponse) query }";
         verify_candidate_did(did).unwrap();
         assert!(verify_candidate_did(&did.replace("reward_shares", "old_shares")).is_err());
+    }
+
+    #[test]
+    fn historical_official_contract_lock_does_not_require_active_release_metadata() {
+        let active = include_str!("../../../tests/e2e_real_canisters/wasms.example.toml");
+        let historical = active
+            .lines()
+            .filter(|line| {
+                !line.contains("sns_governance_baseline_")
+                    && !line.contains("_nns_proposal_id")
+                    && !line.contains("latest_version_proposal_id")
+                    && !line.contains("_did_sha256")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            .replace(
+                "latest_reward_event_participation = \"true\"",
+                "latest_reward_event_participation = \"false\"",
+            );
+        let historical = SnsManifest::parse(&historical).unwrap();
+
+        validate_official_lock(&historical).unwrap();
+        assert!(validate_active_official_lock(&historical).is_err());
+        assert!(validate_official_upgrade_input(&historical).is_err());
+    }
+
+    #[test]
+    fn active_official_lock_has_strict_tuple_and_upgrade_provenance() {
+        let lock = SnsManifest::parse(include_str!(
+            "../../../tests/e2e_real_canisters/wasms.example.toml"
+        ))
+        .unwrap();
+        validate_official_lock(&lock).unwrap();
+        validate_active_official_lock(&lock).unwrap();
+        validate_official_upgrade_input(&lock).unwrap();
+    }
+
+    #[test]
+    fn local_override_drops_only_the_overridden_official_proposal_claim() {
+        let mut lock = SnsManifest::parse(include_str!(
+            "../../../tests/e2e_real_canisters/wasms.example.toml"
+        ))
+        .unwrap();
+        lock.remove_artifact("sns_governance", "nns_proposal_id")
+            .unwrap();
+
+        assert_eq!(lock.artifact("sns_governance", "nns_proposal_id"), None);
+        assert_eq!(lock.artifact("sns_root", "nns_proposal_id"), Some("143739"));
     }
 
     #[test]
