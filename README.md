@@ -41,6 +41,8 @@ duplicating transient commit or CI identities here.
 
 ## Protocol overview
 
+![img](/docs/io-overview-diagram.svg)
+
 The production model has four IO canisters around canonical SNS, ICP, Index,
 Root, and Governance services:
 
