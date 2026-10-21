@@ -4,7 +4,7 @@
   "framework_id": "io-official-sns-w-version-after-144202-2026-10-05",
   "provenance_model": "exact SNS-W latest-version tuple after executed NNS proposal 144202",
   "latest_version_proposal_id": 144202,
-  "approval_scope": "local-rehearsal-only; final deployment source approval unresolved",
+  "approval_scope": "reviewed official standard framework accepted for sale-free acceptance; exact bytes and installation observations mandatory",
   "parser": {
     "commit": "98c898f8de068a1fc0e97ebc805f9fa7f315d862",
     "friendly_parser_sha256": "ee525e7b7bac78f37721d1871cfbcb62c89b35be695392a8022bc3ce3517e126"
@@ -17,12 +17,9 @@
     "reward_event_end_timestamp_seconds": "opt nat64",
     "reward_shares": "opt nat"
   },
-  "developer_neuron_reserved_memo_range_inclusive": [1000000, 10000000],
   "ledger_fee_collector": null,
   "ledger_fee_semantics": "burned",
-  "developer_voting_power_multiplier": "floor(initial_swap_amount_e8s * 100 / total_swap_amount_e8s); initial equals total in this package, so 100%",
-  "genesis_neuron_permissions": "controller receives configured neuron_claimer_permissions; final source renders all SNS permission types, so Jupiter custody hardening requires the standard RemoveNeuronPermissions path after finalization",
-  "sale_icp_destination": "SNS Governance default ICP Account",
-  "gross_price_rule": "accepted direct ICP e8s must equal initial Swap IO allocation e8s",
-  "final_source_rule": "The supplied final sale framework must match one separately approved coherent SNS-W version with exact component, source, compressed/raw Wasm and DID pins."
+  "developer_voting_power_multiplier": "Explicitly 100% in each direct genesis neuron",
+  "genesis_neuron_permissions": "Operator and reserve have the reviewed normal permissions; Jupiter has exactly its SNS Rewards principal with Vote only, no followees, without permission removal.",
+  "final_source_rule": "The direct-installed framework must match this approved coherent official SNS-W tuple with exact component, source, compressed/raw Wasm and DID pins."
 }

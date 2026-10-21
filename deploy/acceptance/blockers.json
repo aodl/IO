@@ -1,73 +1,43 @@
 {
   "schema": "io.acceptance.blockers.v1",
-  "classification": "DRAFT",
-  "additional_observed_or_derived_sealing_inputs": [
-    "canonical Jupiter SNS voting-duration and action-criticality parameters for a deadline feasibility comparison with IO",
-    "complete canonical permanent-neuron observation and staking subaccount",
-    "an existing authorized full-neuron observer (controller/hotkey or authorized ManageNeuron followee principal) for both typed before/after replies; real acceptance read permission remains unverified and blocks checkpoint A if absent",
-    "acceptance Jupiter activation block floor",
-    "current-source IO artifact hashes",
-    "canonical observation of successful sale finalization and actual accepted participation",
-    "post-reserve-migration Ledger supply, Stream reserve, and exclusion balances",
-    "post-capitalization Stream backing and permanent-neuron refresh observations",
-    "read-only status/controller/cycles/module-hash observations for all nine acceptance canisters",
-    "Jupiter SNS Rewards implementation that can permanently reduce the IO neuron permissions to the reviewed voting-only set and cast authenticated IO votes from the actual acceptance canister",
-    "production SNS Governance principal before the full production Jupiter staking Account can be sealed (does not block acceptance)"
+  "classification": "DRAFT_AWAITING_VALIDATION_AND_EXTERNAL_INPUTS",
+  "launch_contract": "direct-Normal-no-sale; genesis-contract.json",
+  "external_prerequisites": [
+    "Actual acceptance Jupiter SNS Rewards canister ID and separate Jupiter inflow principal",
+    "Actual canister-originated authenticated Jupiter proposal mirror, upgrade-safe retry state and deadline feasibility; mock caller is not implementation proof",
+    "Canonical permanent neuron full record and staking Account: Public list_neurons from an unrelated observer, or a genuinely existing authorized get_full_neuron observer. Actual neuron visibility remains unverified. Do not add hotkeys.",
+    "Frozen nine-canister empty-module/subnet/controller/cycles observations",
+    "Hosted source/artifact approval and release closure for the reproduced current-source IO artifacts",
+    "Canonical A/B/C observations and exact backing/top-up/anchor funding plus fees/cycles",
+    "Separate fresh owned-topology maintained lifecycle run; remains BLOCKED / NOT RUN until genuinely completed",
+    "Reviewed finite reconciliation/return liveness bound before any liquidity-before-unlock claim at 15d+1m"
   ],
-  "unfinished_io_tooling": [],
-  "capitalization_rule": "After successful sale finalization, derive C0 canonically, fund B0=C0, and top up the verified permanent neuron by ceil(2*C0/3) e8s while reporting sub-e8 rounding.",
-  "sale_proceeds_policy": "SNS ICP treasury proceeds remain outside IO backing and permanent capital.",
-  "jupiter_governance_dependency": "The IO package derives and excludes the neuron, but governance acceptance remains blocked until the Jupiter repository implements upgrade-safe proposal mapping and voting plus the reviewed permission-removal/custody action.",
-  "missing_human_inputs": [
-    "FINAL_SNS_FRAMEWORK_ID",
-    "FINAL_SNS_SALE_ARTIFACT_HASHES",
-    "FINAL_TOKEN_NAME",
-    "FINAL_TOKEN_SYMBOL",
-    "ACCEPTANCE_SALE_IO_ALLOCATION_E8S",
-    "ACCEPTANCE_MINIMUM_PARTICIPANT_ICP_E8S",
-    "ACCEPTANCE_SALE_START_TIME_AND_DURATION",
-    "GENESIS_CONTROLLER_PRINCIPAL",
-    "ACCEPTANCE_JUPITER_SNS_REWARDS_CANISTER_ID",
-    "ACCEPTANCE_JUPITER_SOURCE_PRINCIPAL",
-    "ACCEPTANCE_PERMANENT_CANONICAL_CACHED_STAKE",
-    "PROPOSAL_URL",
-    "PROJECT_URL"
+  "capitalization_rule": "Derive C0 from actual Ledger supply minus Stream reserve and exact exclusions; B0=C0, permanent increment=ceil(2*C0/3), independent Dynamic anchor=10 ICP. Canonical genesis yields 30/30/20/10 IO/ICP.",
+  "parked_swap_restrictions": [
+    "Unreachable u64::MAX-second opening; Adopted with active timer, no inactive mode or terminal sale",
+    "Quarantined unsolicited ICP does not block acceptance and is never IO backing, permanent capital or protocol funding; accepted Swap participation, buyers and neuron recipes must remain zero",
+    "Later IO transfers remain claim-bearing under canonical supply/reserve/exclusion accounting, including actual fee burns; Swap is never an additional exclusion",
+    "Observed default-Account balances do not establish a complete inventory of Swap-owned subaccounts; exact genesis allocations, frozen Swap state and independent economic reconciliation remain mandatory",
+    "Zero derived price restricts native SNS treasury valuation",
+    "Review every future Swap successor for preservation of frozen safety configuration; no unpublished successor assumed",
+    "Default blessed SNS-W path works without registry; SNS-specific custom paths require separate registration",
+    "Standard error_refund_icp rejects Adopted: unsolicited ICP can remain stranded; any recovery needs separate supported-source review, never a fabricated finalization."
   ],
-  "external_jupiter_work": [
-    "The IO package derives and excludes the neuron, but governance acceptance remains blocked until the Jupiter repository implements upgrade-safe proposal mapping and voting plus the reviewed permission-removal/custody action."
-  ],
-  "proven_framework_authority_constraints": [],
-  "source_findings_requiring_live_proof": [],
-  "local_build_constraints": [
-    "The separate official lifecycle profile is BLOCKED / NOT RUN until a fresh owned topology and its authorized local workflow are available; historical topology evidence is not a substitute.",
-    "Historical recorded-source reproduction passed on 2026-10-18, but fresh current-source release artifacts, release reproducibility and source-bound rehearsal evidence remain required before launch. Historical packages must not be rebound to the adoption source."
-  ],
-  "completed_independent_tests": [
-    "Pinned parser/pre-execution/builder accepted generated local 3 IO / 3 ICP configuration; parsed acceptance/production economics match; five mutations rejected. Deployment parameters remain unapproved.",
-    "Real PocketIC 14 NNS existing-ID non-controller refresh succeeded and preserved controller/configuration; three valid Configure operations returned NotAuthorized.",
-    "All six clean pinned-source SNS Wasms built; same-source bundle assembly and raw/compressed byte validation passed. Exact-bundle capability-bearing contract profile passed, including real Governance.",
-    "Real self-deployed same-source sale and reserve migration passed checkpoints A/B: all sweep/recipe/claim calls successful, Fund-disabled result zero, actual Governance Normal and Root success, C0=3299980000 e8s, Delta K=2199986667 e8s. Empty initial dapp list does not prove IO installation.",
-    "Real A/B single-mutation rejection suite passed in 174.68 seconds, including unknown modes and extra arguments.",
-    "Real 30 IO / 10 IO proposer-fee lifecycle passed in 70.77 seconds; canonical max-neuron bound updated to 1000 by standard adopted proposal.",
-    "Real Jupiter caller canister hardening passed in 69.10 seconds: exact sole Vote permission, successful vote, authorization failures for valid restricted operations.",
-    "acceptance_sale_real passed the full initially-registered Root install A/B/C launch in 117.86 seconds, including canonical Dynamic reconciliation, daily entitlement and exact 0.49990303 ICP redemption payout for 0.5 IO.",
-    "Extracted real checkpoint C mutation test passed in 178.65 seconds.",
-    "Offline deployment-context and existing permanent-neuron support implemented; 21 acceptance component tests passed. Mainnet observations are not claimed.",
-    "Canonical test_ci passed after the final launch and configuration repairs.",
-    "The current-source candidate reward-share integration passed serially against the pinned Governance candidate.",
-    "2026-10-16 corrective focused tests passed: 23 acceptance component tests, 41 browser unit tests, installed acceptance HTML/JS byte checks, real checkpoint C mutations (757.96 seconds), and expanded real A/B integrity mutations (840.32 seconds). Excess initial anchor funding leaves constructor economics unchanged.",
-    "2026-10-16 timer-only real launch passed in 362.73 seconds: generation-1 TopUp and structural checkpoint finalized, then generation 2 and an eligible reward event progressed with zero keeper calls. Keeper-assisted acceptance_sale_real also passed in 282.89 seconds, preserving the genuine sale and ordinary Governance/Root path.",
-    "2026-10-16 full-neuron authorization passed locally in 72.94 seconds: canister controller and explicit fixture hotkey read the typed record without changing it; unrelated operator is NotAuthorized. Real acceptance read authority is not verified.",
-    "2026-10-16/17 final corrective test_ci passed formatting, all-targets check, interface/stable/simplicity gates, recorded-source reproduction, frontend checks, unit tests, the first complete 24-case Stream target, NNS/Historian/topology/Root groups, and strict all-features clippy. Its security and later PocketIC transport failures are retained in the dated 2026-10-17 implementation-status.md record; this was not a green aggregate.",
-    "2026-10-17 isolated current-code Dynamic dust/fee regression passed in 153.16 seconds: fixed 10 ICP anchor, excluded unsolicited surplus, zero initial claim credit, anchor-only fee consumption and exact permit replay. This narrow pass does not make the failed aggregate green.",
-    "2026-10-17 required offline security_scan_required passed with quinn-proto 0.11.18 and rustls 0.23.46 and no new advisory exception.",
-    "2026-10-17 official SNS-W resolver verified the coherent six-component version after executed proposal 144202, including each publication proposal, source revision, compressed/raw Wasm and embedded DID hash. Official execution profiles and real acceptance remained pending at that artifact-resolution checkpoint.",
-    "2026-10-18 official contract profile exited 0: ten boundary tests, one additive Candid test and one real contract case (27.33 seconds) passed. Log: /home/codexdev/.codex-io/sns-framework/commands/20261018T160754Z-3349458.log.",
-    "2026-10-18 official io profile exited 0: contract checks and the real IO reward-share case (192.14 seconds) passed. Log: /home/codexdev/.codex-io/sns-framework/commands/20261018T160935Z-3351099.log.",
-    "2026-10-18 official upgrade profile exited 0: one real reviewed predecessor-to-selected Governance upgrade case passed in 222.02 seconds. Log: /home/codexdev/.codex-io/sns-framework/commands/20261018T161351Z-3354096.log. All three profiles used official mode, governance scope, no overrides and the same reviewed frozen tuple; the predecessor is an upgrade-test input only.",
-    "2026-10-18 official-bundle acceptance_sale_real exited 0: one passed, zero ignored, 198.85 seconds. Genuine Swap finalization, Governance Normal, A/B/C, capitalization, Governance/Root installations, frontend binding and exact redemption passed. Typed init, post-sale proposal and queried effective parameters retain automatic target advancement false. Log: /home/codexdev/.codex-io/sns-framework/commands/20261018T162307Z-3362160.log.",
-    "2026-10-18 official-bundle timer-only regression exited 0: one passed, zero ignored, 192.54 seconds; zero keeper calls, generation-1 TopUp and structural finalization, generation 2 and subsequent reward progress, unchanged backing and excluded anchor fee. Log: /home/codexdev/.codex-io/sns-framework/commands/20261018T162647Z-3365522.log. Real A/B/C negative cases also passed (two tests, zero ignored, 816.62 seconds), log 20261018T163053Z-3368834.log in the same directory.",
-    "2026-10-18 independent full NNS recovery target exited 0 (29 passed, zero failed/ignored, 1195.90 seconds), log /home/codexdev/.codex-io/sns-framework/commands/20261018T164444Z-3376815.log; full Stream target exited 0 (24 passed, zero failed/ignored, 1523.37 seconds), log /home/codexdev/.codex-io/sns-framework/commands/20261018T170500Z-3393749.log. Existing hard TTLs remain 7200 and 3600 seconds; no new OOM or transport failure was recorded.",
-    "2026-10-18 canonical test_ci exited 0 in 2h 6m 58s (17:31:02-19:38:00 UTC), log /home/codexdev/.codex-io/sns-framework/commands/20261018T173102Z-3475880.log, SHA-256 de6f9dd3556e381948e1e8e71b9b04205a4653fd7de1eb34e0f2c41b7daafff9. Tested HEAD d3435371d6aa743b3fc17bb0038cf90e9765dd1e plus tracked patch SHA-256 2bac20780f04dc429ec9aaffe0ac0a45beffd713664fc1230182d4bbebeb36f1. All required groups passed, including security_scan_required with quinn-proto 0.11.18/rustls 0.23.46 and no new exception, full NNS recovery 29/29, and all three full Stream invocations 24/24. Existing allowed unmaintained warnings and opt-in ignored tests remain explicit in implementation-status.md. CI_GREEN and OFFICIAL_SOURCE_VERIFIED_AND_LOCALLY_TESTED apply to that implementation; the package remains LOCALLY_REHEARSED_AWAITING_INPUTS, not deployment-approved."
-  ]
+  "genesis_jupiter_permissions": "Exactly one principal with Vote, no followees; no post-launch permission removal",
+  "historical_evidence": "history/sale-architecture-2026-10-18/; immutable evidence is not current launch authority",
+  "validation": "Host tools: 164 tests passed; typed direct initializer and ten mutations passed; four current-source raw/gzip Wasms reproduced independently. Eleven focused exact runtime probes passed, including complete A/B/C, timer-only progression, negative cases, Vote-only permissions, public observations and successful official framework upgrade journal. Full NNS recovery target passed 29 tests; Stream and canonical CI remain queued for an uncontended runner. Required security scan passed after the two approved host TLS patches.",
+  "security_gate": {
+    "status": "PASS_AFTER_APPROVED_HOST_ONLY_PATCHES",
+    "new_advisories": [
+      "RUSTSEC-2026-0381",
+      "RUSTSEC-2026-0382"
+    ],
+    "applied_existing_dependency_patches": {
+      "rustls-webpki": "0.103.15 -> 0.103.16",
+      "webpki-roots": "1.0.7 -> 1.0.10"
+    },
+    "normal_canister_dependency_edges": 0,
+    "cargo_lock_changed": true,
+    "new_exceptions": 0
+  }
 }

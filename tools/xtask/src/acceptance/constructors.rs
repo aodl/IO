@@ -249,7 +249,9 @@ pub(crate) fn payloads(
         ("swap", CanisterRole::SnsSwap, Some("sns_swap")),
     ] {
         let hash = match component {
-            Some(component) => bundle.require_hash(component)?,
+            Some(component) => bundle
+                .source_sha256(component)
+                .ok_or("official installed gzip module hash missing")?,
             None => modules[name]["raw_wasm_sha256"]
                 .as_str()
                 .ok_or("IO raw module hash missing")?,

@@ -1,10 +1,10 @@
 {
   "schema": "io.acceptance.controller-topology.v1",
-  "source_authority": "SNS-W install/finalize behavior for the separately approved coherent official framework version",
+  "source_authority": "Pinned standard direct Normal installation and exercised Governance/Root controller graph",
   "external_governance_roles": {
     "acceptance_jupiter_sns_rewards": "TBD_ACCEPTANCE_JUPITER_SNS_REWARDS_CANISTER_ID",
     "production_jupiter_sns_rewards": "alk7f-5aaaa-aaaar-qb4ra-cai",
-    "relationship": "controller and eventual Vote-only permission holder for the excluded Jupiter IO neuron; not an IO dapp canister and not controlled by IO SNS Root",
+    "relationship": "sole genesis Vote-only principal for the excluded Jupiter IO neuron; independent of the four IO dapps",
     "distinct_from": [
       "acceptance Jupiter/source principal",
       "NNS Manager Jupiter inflow identity",
@@ -18,7 +18,7 @@
       "required": "all nine frozen IDs exist, are empty, and have only the allowlisted reservation controllers"
     },
     "pre_sns_install": {
-      "operator_or_fallback": "TBD_GENESIS_CONTROLLER_PRINCIPAL",
+      "operator_or_fallback": "zkkkd-i34qc-367ln-e2u7o-ezznu-dkfqh-gtfvz-cviph-6qa4v-evtfs-wqe",
       "controls": [
         "SNS Governance",
         "SNS Root",
@@ -31,23 +31,46 @@
         "Frontend"
       ]
     },
-    "post_successful_sale_acceptance": {
-      "sns_governance": ["SNS Root"],
-      "sns_root": ["SNS Governance"],
-      "sns_ledger": ["SNS Root"],
-      "sns_index": ["SNS Root"],
-      "sns_swap": ["SNS Root"],
-      "stream_manager": ["SNS Root"],
-      "nns_manager": ["SNS Root"],
-      "historian": ["SNS Root"],
-      "frontend": ["SNS Root"],
-      "acceptance_fallback_exception": "optional only if explicitly sealed and proven compatible with the final framework; default target is ordinary SNS sole-controller handoff"
-    },
     "eventual_production": {
       "policy": "ordinary SNS sole-controller topology; no operator fallback",
-      "sns_governance": ["SNS Root"],
-      "sns_root": ["SNS Governance"],
-      "sns_ledger_index_swap_and_io_dapps": ["SNS Root"]
+      "sns_governance": [
+        "SNS Root"
+      ],
+      "sns_root": [
+        "SNS Governance"
+      ],
+      "sns_ledger_index_swap_and_io_dapps": [
+        "SNS Root"
+      ]
+    },
+    "direct_genesis_acceptance": {
+      "sns_governance": [
+        "SNS Root"
+      ],
+      "sns_root": [
+        "SNS Governance"
+      ],
+      "sns_ledger": [
+        "SNS Root"
+      ],
+      "sns_index": [
+        "SNS Root"
+      ],
+      "sns_swap": [
+        "SNS Root"
+      ],
+      "stream_manager": [
+        "SNS Root"
+      ],
+      "nns_manager": [
+        "SNS Root"
+      ],
+      "historian": [
+        "SNS Root"
+      ],
+      "frontend": [
+        "SNS Root"
+      ]
     }
   }
 }

@@ -1,7 +1,6 @@
 {
   "schema": "io.acceptance.genesis-neurons.v1",
-  "operator_controller": "TBD_GENESIS_CONTROLLER_PRINCIPAL",
-  "sale_reserved_memo_range_inclusive": [1000000, 10000000],
+  "operator_controller": "zkkkd-i34qc-367ln-e2u7o-ezznu-dkfqh-gtfvz-cviph-6qa4v-evtfs-wqe",
   "neurons": [
     {
       "name": "governance",
@@ -26,22 +25,25 @@
       "claim_bearing": false,
       "stream_excluded": true,
       "io_reward_policy": "no credits, recipient entry, or denominator weight",
-      "sns_voting_power": "100% developer multiplier because initial_swap_amount_e8s equals total_swap_amount_e8s",
-      "custody": "must remain staked and receive only the permissions needed by the separately implemented Jupiter voting mirror"
+      "sns_voting_power": "Explicit 100% genesis voting-power multiplier",
+      "custody": "Exactly the Jupiter SNS Rewards principal with Vote only at genesis; no followees.",
+      "permissions": [
+        "Vote"
+      ]
     },
     {
       "name": "reserve-transport",
       "memo": 5282531345630769201,
       "memo_domain": "IORES001",
-      "stake_e8s": "TOTAL_SUPPLY_E8S - 3000000000 - 10000000000000000 - SALE_IO_ALLOCATION_E8S",
+      "stake_e8s": 89999997000000000,
       "dissolve_delay_seconds": 0,
       "vesting_period_seconds": 0,
       "claim_bearing": false,
       "stream_excluded": true,
-      "post_successful_sale_state_required": "Dissolved and normally disbursable under Governance Normal"
+      "direct_genesis_state": "Dissolved and normally disbursable in Governance Normal",
+      "subaccount_hex": "d7a5e01a747275983dbccdf7b596d55c3816844ac7b3731fa8d6c90e9922fc40"
     }
   ],
-  "initial_swap_io_allocation_e8s": "TBD_ACCEPTANCE_SALE_IO_ALLOCATION_E8S",
   "jupiter_staking_account_derivations": {
     "acceptance": {
       "owner": "h7y7s-kyaaa-aaaas-amxrq-cai",
@@ -57,5 +59,6 @@
       "subaccount_hex": "7ad7034691f63c7f831a919cde4a7960de689e842d4aa256f1b0c6623c8da0a7"
     }
   },
-  "sum_invariant": "3000000000 + 10000000000000000 + reserve_transport_stake_e8s + initial_swap_io_allocation_e8s = 100000000000000000"
+  "sum_invariant": "3000000000 + 10000000000000000 + 89999997000000000 = 100000000000000000",
+  "swap_e8s": 0
 }

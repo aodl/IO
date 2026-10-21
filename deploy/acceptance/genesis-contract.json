@@ -1,0 +1,36 @@
+{
+  "schema": "io.acceptance.genesis-contract.v1",
+  "launch": "direct-Normal-no-sale",
+  "reviewed_sns_framework_id": "io-official-sns-w-version-after-144202-2026-10-05",
+  "official_version_components_required": [
+    "Governance",
+    "Root",
+    "Ledger",
+    "Index",
+    "Swap",
+    "Archive"
+  ],
+  "genesis_supply_e8s": 100000000000000000,
+  "parked_swap": {
+    "sns_token_e8s": 0,
+    "should_auto_finalize": false,
+    "swap_start_timestamp_seconds": 18446744073709551615,
+    "swap_due_timestamp_seconds": 18446744073709551615,
+    "nns_proposal_id": 0,
+    "min_participants": 1,
+    "min_direct_participation_icp_e8s": 100000000,
+    "max_direct_participation_icp_e8s": 100000000,
+    "min_participant_icp_e8s": 100000000,
+    "max_participant_icp_e8s": 100000000,
+    "neuron_basket_construction_parameters": {
+      "count": 2,
+      "dissolve_delay_interval_seconds": 86400
+    },
+    "neurons_fund_participation": false
+  },
+  "compatibility_data": "Nonzero participation limits and nns_proposal_id=0 are required constructor compatibility data, not an offer, accepted contribution or NNS creation proposal.",
+  "clock_invariant": "Pinned Swap converts a u64 nanosecond clock to seconds; u64::MAX seconds is unreachable.",
+  "unexpected_balance_policy": "Zero genesis allocations are distinct from later transfers. Record observed default-Account balances without asserting all Swap subaccounts are empty. Unsolicited ICP is quarantined, never backing, permanent capital or funding; it does not block acceptance. Later IO remains claim-bearing under canonical total-supply/reserve/exclusion accounting, including actual fee burns.",
+  "upgrade_policy": "Only the default blessed SNS-W path is demonstrated unregistered. Review every Swap successor for preservation of the parked invariant; no unpublished successor is assumed.",
+  "native_treasury_restriction": "Zero Swap price prevents source-defined native SNS-token valuation; do not fabricate price or proceeds."
+}

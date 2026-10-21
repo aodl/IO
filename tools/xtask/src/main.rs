@@ -8779,7 +8779,7 @@ fn run_security_scan(required: bool) -> bool {
 }
 
 fn print_known_commands() {
-    eprintln!("known: acceptance_checkpoint, acceptance_constructors, acceptance_local_config, acceptance_local_accounts, acceptance_preflight, acceptance_render, acceptance_capitalization, acceptance_preframework, acceptance_preframework_pocketic, acceptance_sale_real, test_all, test_ci, verify_release, simplicity_check, validate_workflows, validate_obsolete_economics_guard, validate_nns_boundary_pin, security_scan, security_scan_required, validate_install_args, validate_production_wiring, validate_historian_freshness, validate_stable_storage, validate_local_sns_rehearsal, validate_local_sns_ledger, validate_local_sns_evidence_package, validate_local_sns_committed_evidence, validate_local_sns_scripts, e2e_coverage_matrix_check, live_stream_manager_pocketic_gate_check, real_canister_harness_check, real_canister_artifact_manifest_check, verify_real_canister_artifacts, fetch_real_canister_artifacts, real_sns_ledger_index_tests, real_sns_ledger_index_required, real_sns_governance_tests, real_sns_governance_required, real_io_e2e_tests, real_io_e2e_required, e2e_real_coverage_check, local_sns_evidence_tests, sns_apy_policy_tests, frontend_setup, frontend_build, frontend_unit, frontend_certified_asset_tests, frontend_required, frontend_all, historian_tests, historian_required, sns_harness_check, sns_config_validate, sns_config_validate_official, sns_launch_readiness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_root_lifecycle_tests, sns_root_lifecycle_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, build_recorded_source, verify_recorded_source, compare_release_artifact_dirs, nns_neuron_staking_subaccount, sns_distribution_subaccount, calculate_redemption_economics, index_transfer_block, verify_artifacts, verify_completed_release, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, historian_pocketic_integration, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
+    eprintln!("known: acceptance_checkpoint, acceptance_constructors, acceptance_local_config, acceptance_local_accounts, acceptance_preflight, acceptance_render, acceptance_capitalization, acceptance_preframework, acceptance_preframework_pocketic, acceptance_genesis_real, test_all, test_ci, verify_release, simplicity_check, validate_workflows, validate_obsolete_economics_guard, validate_nns_boundary_pin, security_scan, security_scan_required, validate_install_args, validate_production_wiring, validate_historian_freshness, validate_stable_storage, validate_local_sns_rehearsal, validate_local_sns_ledger, validate_local_sns_evidence_package, validate_local_sns_committed_evidence, validate_local_sns_scripts, e2e_coverage_matrix_check, live_stream_manager_pocketic_gate_check, real_canister_harness_check, real_canister_artifact_manifest_check, verify_real_canister_artifacts, fetch_real_canister_artifacts, real_sns_ledger_index_tests, real_sns_ledger_index_required, real_sns_governance_tests, real_sns_governance_required, real_io_e2e_tests, real_io_e2e_required, e2e_real_coverage_check, local_sns_evidence_tests, sns_apy_policy_tests, frontend_setup, frontend_build, frontend_unit, frontend_certified_asset_tests, frontend_required, frontend_all, historian_tests, historian_required, sns_harness_check, sns_config_validate, sns_config_validate_official, sns_launch_readiness_check, sns_governance_read_tests, sns_governance_read_required, sns_ledger_index_tests, sns_ledger_index_required, sns_root_lifecycle_tests, sns_root_lifecycle_required, sns_pocketic_smoke, sns_pocketic_required, test_pocketic_required, preflight, check, fmt_check, did_surface, build_canisters, build_recorded_source, verify_recorded_source, compare_release_artifact_dirs, nns_neuron_staking_subaccount, sns_distribution_subaccount, calculate_redemption_economics, index_transfer_block, verify_artifacts, verify_completed_release, build_debug_canisters, test_unit, test_pocketic_integration, test_local_integration, test_e2e, stream_manager_unit, nns_neuron_manager_unit, historian_pocketic_integration, stream_manager_pocketic_integration, nns_neuron_manager_pocketic_integration");
 }
 
 fn main() -> ExitCode {
@@ -8833,12 +8833,7 @@ fn main() -> ExitCode {
             }
         }
         "acceptance_preflight" => {
-            let sealed = args.first().is_some_and(|value| value == "sealed");
-            let result = if sealed {
-                Err("the monolithic seal is retired; use acceptance_checkpoint A, B and C with the corresponding observed evidence directory".into())
-            } else {
-                acceptance::validate(&root, false)
-            };
+            let result = acceptance::validate(&root);
             match result {
                 Ok(()) => eprintln!("✓ acceptance package validates (draft)"),
                 Err(err) => {
@@ -8909,10 +8904,10 @@ fn main() -> ExitCode {
                 );
             }
         }
-        "acceptance_sale_real" => match acceptance::real_framework_hook(&root) {
+        "acceptance_genesis_real" => match acceptance::real_framework_hook(&root) {
             Ok(()) => {}
             Err(err) => {
-                eprintln!("✗ acceptance sale real: {err}");
+                eprintln!("✗ acceptance genesis real: {err}");
                 ok = false;
             }
         },

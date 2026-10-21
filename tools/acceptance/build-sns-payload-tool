@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the pinned SNS CLI, then link the offline adapter against its dependencies.
+"""Build pinned upstream dependencies, then link the typed direct-genesis adapter.
 
 Requires approval for public build-input downloads. Source checkout and identities
 are read-only. The caller supplies an external output directory.
@@ -39,21 +39,44 @@ if override:
 else:
     rc = cache / 'acceptance-pinned.bazelrc'
     rc.write_text(rc_text)
-subprocess.run(['bazelisk', '--batch', '--nosystem_rc', '--nohome_rc', '--noworkspace_rc',
-                f'--bazelrc={rc}', 'build', '--jobs=2',
-                '--action_env=PATH=/home/codexdev/.local/bin:/usr/bin:/bin',
-                '//rs/sns/cli:sns'], cwd=ic, check=True)
+prior_binding = os.environ.get('IO_ACCEPTANCE_UPSTREAM_BUILD_BINDING')
+sha = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
+if prior_binding:
+    previous = json.loads(pathlib.Path(prior_binding).read_text())
+    if (previous['ic_commit'] != pin or previous['ic_dirty'] is not False
+            or previous['dependency_binding'] != 'successful pinned Bazel CLI build in this invocation'
+            or previous['cli_sha256'] != sha(ic / 'bazel-bin/rs/sns/cli/sns')
+            or previous['cli_compile_parameters_sha256'] != sha(ic / 'bazel-bin/rs/sns/cli/sns-0.params')):
+        sys.exit('cached upstream build does not match its completed pinned-source binding')
+else:
+    subprocess.run(['bazelisk', '--batch', '--nosystem_rc', '--nohome_rc', '--noworkspace_rc',
+                    f'--bazelrc={rc}', 'build', '--jobs=1', '--nofetch', '--repository_disable_download',
+                    '--action_env=PATH=/home/codexdev/.local/bin:/usr/bin:/bin',
+                    '//rs/sns/cli:sns'], cwd=ic, check=True)
 params = (ic / 'bazel-bin/rs/sns/cli/sns-0.params').read_text().splitlines()
 execroot = (ic / 'bazel-out').resolve().parent
 sysroot = next(x.split('=', 1)[1] for x in params if x.startswith('--sysroot='))
 rustc = execroot / sysroot / 'bin/rustc'
 # Reuse only dependency and native-link inputs, not upstream output locations.
 flags = [x for x in params if x.startswith(('--extern=', '-Ldependency=', '-Lnative=', '--sysroot='))]
+# The direct constructors use the same production Ledger, Index and Swap types
+# as SNS init. Bind their exact existing compilation dependencies, not new crates.
+init_params = list((ic / 'bazel-bin/rs/sns/init').glob('*.rlib-0.params'))
+if len(init_params) != 1:
+    sys.exit('expected one pinned SNS init compilation binding')
+extra = init_params[0].read_text().splitlines()
+seen = {x.split('=', 2)[1] for x in flags if x.startswith('--extern=')}
+for flag in extra:
+    if flag.startswith('--extern=') and flag.split('=', 2)[1] not in seen:
+        flags.append(flag)
+        seen.add(flag.split('=', 2)[1])
+    elif flag.startswith(('-Ldependency=', '-Lnative=')) and flag not in flags:
+        flags.append(flag)
 friendly = ic / 'rs/sns/cli/src/init_config_file/friendly.rs'
 source = pathlib.Path(__file__).resolve().with_name('sns_payloads.rs')
 out.mkdir(parents=True)
 wrapper = out / 'main.rs'
-wrapper.write_text('#[path = ' + json.dumps(str(friendly)) + ']\nmod friendly;\n' + source.read_text())
+wrapper.write_text('include!(' + json.dumps(str(source)) + ');\n')
 subprocess.run([str(rustc), str(wrapper), '--edition=2024', '--crate-name=io_sns_payloads',
                 '-C', 'opt-level=1', '-o', str(out / 'sns-payloads'), *flags], cwd=execroot, check=True)
 if subprocess.check_output(['git', '-C', str(ic), 'rev-parse', 'HEAD'], text=True).strip() != pin or subprocess.check_output(['git', '-C', str(ic), 'status', '--porcelain']):
@@ -63,7 +86,11 @@ sha = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
     'ic_commit': head, 'ic_dirty': False,
     'friendly_parser_sha256': sha(friendly), 'adapter_sha256': sha(source),
     'binary_sha256': sha(out / 'sns-payloads'),
-    'dependency_binding': 'successful pinned Bazel CLI build in this invocation',
+    'dependency_binding': ('verified completed pinned Bazel build reused' if prior_binding else 'successful pinned Bazel CLI/SNS-init dependency build in this invocation'),
+    'prior_upstream_build_binding_sha256': sha(pathlib.Path(prior_binding)) if prior_binding else None,
+    'sns_init_compile_parameters_sha256': sha(init_params[0]),
+    'genesis_contract_sha256': sha(source.parents[1].parent / 'deploy/acceptance/genesis-contract.json'),
+    'economics_sha256': sha(source.parents[1].parent / 'deploy/acceptance/canonical-sns-economics.json'),
     'bazelrc_path': str(rc), 'bazelrc_sha256': sha(rc),
     'bazelrc_override': bool(override),
     'cli_sha256': sha(ic / 'bazel-bin/rs/sns/cli/sns'),
