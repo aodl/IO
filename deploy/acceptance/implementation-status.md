@@ -1,14 +1,52 @@
 # Sale-free acceptance conversion
 
-Readiness: **VALIDATION IN PROGRESS; NOT DEPLOYMENT READY**.
+Readiness: **VALIDATION-PENDING FOR LIVE ACCEPTANCE; DEVELOPMENT CHECKS GREEN**.
 
-The table below records the earlier conversion baseline, before the parked-Swap
-dusting correction. It does not validate the final stabilization tree. Fresh
-focused results, source/index/patch snapshots, artifact reproduction and canonical
-CI results are retained separately under
-`/home/codexdev/.codex-io/sns-framework/sale-free-stabilisation-20261021`.
-The staged conversion is preserved; stabilization changes are unstaged until
-the user authorizes a commit boundary. No additional staging is performed.
+Validated on 2026-10-22: `feat/sale-free-acceptance-genesis` commit
+`043cde2d54573371f0388175963ab9fe141a8aec`, Git tree
+`eba7cf4123a59c0562433e4f42a462965af1bb58`, with TLS parent
+`5da0ef9c76edcd44c3c5dd6d4565f1ad0d5f57da`. The source was clean throughout
+validation. This status update is a documentation-only follow-up to that tree.
+
+| Committed-candidate validation | Actual result |
+| --- | --- |
+| `acceptance_sale::real_launch_checkpoints_a_b_c` | One executed, passed; exit 0; 530.97 seconds |
+| `acceptance_sale::real_checkpoint_a_b_negative_cases` | One executed, passed; exit 0; 857.46 seconds |
+| `acceptance_sale::real_checkpoint_c_negative_cases` | One executed, passed; exit 0; 530.45 seconds |
+| Fresh independent current-source reproduction | Four raw Wasms and four canonical gzip outputs byte-identical; exit 0; 632 snapshot files matched HEAD Git blobs |
+| [Hosted canonical CI](https://github.com/aodl/IO/actions/runs/39732151304) | Exit 0; full Stream 24/24 in each of three aggregate invocations; NNS recovery 29/29; zero ignored/filtered in those targets |
+| [Hosted security](https://github.com/aodl/IO/actions/runs/39732151296) | Passed Cargo Deny and Audit; four allowed maintenance warnings |
+| [Hosted recorded-release reproduction](https://github.com/aodl/IO/actions/runs/39732151301) | Passed for historical recorded source; separate from the fresh current-source proof |
+
+The focused commands used `cargo test --offline --locked -p e2e-real-canisters`
+with each exact name above and `-- --ignored --exact --test-threads=1 --nocapture`.
+They ran serially on pinned PocketIC 14 with the reviewed official SNS bundle,
+typed initializer and current-source IO/frontend Wasms. Independent Jupiter jobs
+overlapped with separate servers/state/output paths; sampled available RAM stayed
+at least 2,416 MiB during the focused commands, with no observed OOM-counter rise.
+Hosted CI separately passed frontend, security, interface, stable-state, provenance,
+Wasm and strict all-targets/all-features Clippy gates. Its real-canister default
+suite passed 106 tests and explicitly ignored 81 opt-in cases; the three local
+exact invocations above provide their runtime evidence.
+
+The dusted launch retained 1 ICP in Swap's default Account, Adopted state and zero
+accepted participation. C0/B0 remained 30 IO/30 ICP, the permanent increment
+20 ICP and the independent Dynamic anchor 10 ICP. Quarantined ICP contributed
+zero backing/funding. Timer-only TopUp, principal return, the exact 49,990,333
+e8s ICP redemption credit and the later operator entitlement passed with zero
+keeper calls and Jupiter monetarily excluded.
+
+Commands, logs, resource samples, hashes and retained typed replies:
+`/home/codexdev/.codex-io/sns-framework/sale-free-resource-aware-validation-20261022T065759Z`.
+Fresh build inputs/results and all four raw/gzip artifacts:
+`/home/codexdev/.cache/io/sale-free-committed-reproduction-043cde2d5457-20261021T212003Z`.
+The build executed on 2026-10-22; its directory suffix identifies the prepared
+driver. Historical release artifacts/evidence were not rebound or modified.
+
+Live acceptance still requires real Jupiter voting/mirroring integration, live
+permanent-neuron visibility/authority, acceptance topology, a fresh owned-topology
+maintained lifecycle, the applicable finite liveness proof and independent audit.
+No merge, live deployment, funding or identity operation is approved by these results.
 
 Parked Swap default-Account ICP deposits are observable quarantined funds and
 do not block acceptance or contribute to backing, permanent capital or funding.
@@ -17,15 +55,19 @@ formula, with actual fee burns. The exact zero genesis allocation, Adopted state
 frozen constructor and zero accepted participation/buyers/recipes remain required.
 Observing default Accounts does not inventory all Swap-owned subaccounts.
 
-Source: feature branch `feat/sale-free-acceptance-genesis`, base
-`c44bc8eb251451c82a3fba21fccfe9ff8c076853`, with uncommitted source changes.
-No staging, commits, pushes, deployment, mainnet calls or identity operations.
-No production canister source, monetary state, schema or official SNS pins changed.
+No production canister source, monetary state, schema, launch economics or official
+SNS pins changed during validation. No staging, commits or pushes were performed.
 
 The active path is typed direct Normal genesis with the installed parked standard
 Swap, exact three-neuron allocation, observed C0-derived A/B/C capitalization,
 and Governance/Root installation of the four IO roles. No active sale fallback,
 post-launch permission removal, or monolithic sealing path remains.
+
+## Historical conversion baseline
+
+The following records describe the earlier pre-dusting conversion, before the
+two development commits. They retain their original source/evidence authority;
+queued or uncommitted descriptions here do not describe the validated tree above.
 
 | Validation | Actual result |
 | --- | --- |
