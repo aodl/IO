@@ -5,9 +5,12 @@ mainnet query, identity access, funding, installation or controller change.
 The nine acceptance IDs in acceptance-manifest.json are frozen. Resolve external
 inputs explicitly; stop on any mismatch or unresolved required stage input.
 
-1. Reserve an uncontended runner. Record CPU, RAM, free disk and active parent
-   aggregates as well as their current test children. Use PocketIC 14 and execute
-   suites serially; never stop another workspace's job.
+1. Check available CPU, RAM, free disk and active parent aggregates as well as
+   their current test children. Run IO value-moving suites serially on PocketIC
+   14 with independent servers/state/output paths. Independent projects may run
+   concurrently when measured capacity and path isolation support it; defer
+   resource-intensive work on demonstrated contention. Never stop another
+   workspace's job. General agent-policy amendments require separate review.
 2. Verify the approved official lock, each component's raw/gzip bytes and DID,
    clean pinned constructor source and adapter/build binding. Build optimized
    current-source IO Wasms and isolated acceptance browser/Wasm artifacts.

@@ -2,6 +2,15 @@
 
 This is the handoff index for an independent auditor. It is not a self-audit and does not claim external approval. IO remains prelaunch, Paused/inert where applicable, and not live.
 
+For reviewed sale-free source `76de77b8d997609623f3e84f8dc3a3be4991470b`
+(executable source `043cde2d54573371f0388175963ab9fe141a8aec`), start with the
+[acceptance-readiness handoff](../../deploy/acceptance/readiness-handoff.md) and
+[unexecuted live preflight](../../deploy/acceptance/read-only-preflight.md).
+They bind the Jupiter source review, missing governance authority/timing,
+retained direct-genesis validation, lifecycle coverage and conditional liveness
+claims. The recorded release below remains historical evidence for its own
+source; it has not been rebound to this acceptance candidate.
+
 ## Recorded release identity
 
 - Source-finalization commit:

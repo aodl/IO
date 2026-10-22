@@ -2,6 +2,16 @@
 
 Readiness: **VALIDATION-PENDING FOR LIVE ACCEPTANCE; DEVELOPMENT CHECKS GREEN**.
 
+The 2026-10-22 [readiness handoff](readiness-handoff.md) reviews integrated
+master `76de77b8d997609623f3e84f8dc3a3be4991470b` and Jupiter
+`1c86d9b32c774a470489b4e4a5cfe4ddfaae7341`. No canonical Jupiter decision
+source or post-submission voting-deadline contract is established by those
+sources. Mirror implementation stops at that gate. The handoff also records
+the maintained-lifecycle disposition proposed for review and the source-defined
+12-hour structural cadence's conditional liquidity limit. The
+[live preflight](read-only-preflight.md) is prepared but unexecuted; these
+documents do not close any live acceptance blocker.
+
 Validated on 2026-10-22: `feat/sale-free-acceptance-genesis` commit
 `043cde2d54573371f0388175963ab9fe141a8aec`, Git tree
 `eba7cf4123a59c0562433e4f42a462965af1bb58`, with TLS parent
