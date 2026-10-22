@@ -6,7 +6,7 @@
       "name": "reserve-transport-neuron-staking-account",
       "source": "reserve-transport genesis neuron",
       "owner": "h7y7s-kyaaa-aaaas-amxrq-cai",
-      "subaccount_hex": "TBD_DERIVED_AFTER_GENESIS_CONTROLLER_MEMO_5282531345630769201",
+      "subaccount_hex": "d7a5e01a747275983dbccdf7b596d55c3816844ac7b3731fa8d6c90e9922fc40",
       "economic_reason": "temporary container for protocol reserve; never claim-bearing",
       "steady_state_balance": "normally zero after direct reserve migration",
       "permanent_exclusion": true
@@ -23,7 +23,6 @@
     }
   ],
   "governance_neuron_is_excluded": false,
-  "ordinary_sale_neurons_are_excluded": false,
   "stream_reserve_is_explicitly_listed": false,
   "stream_reserve_note": "The core claim-supply formula excludes Stream reserve separately; StreamConfig rejects duplicating it in this list."
 }

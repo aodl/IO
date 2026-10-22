@@ -35,7 +35,7 @@ duplicating transient commit or CI identities here.
 | --- | --- |
 | Protocol implementation | Anchored dynamic-backing replacement under source validation |
 | Product and launch configuration | Partly open; local fixtures do not imply final production values |
-| Official SNS reward-share capability | External dependency until an accepted official release supplies it |
+| Official SNS reward-share capability | Accepted official tuple after proposal 144202; exact installation evidence remains mandatory |
 | External audit | Required |
 | Mainnet deployment and activation | Not performed; separately authorized |
 
@@ -119,12 +119,19 @@ The following are deliberate launch constraints, not missing features:
 - missed reward events receive no fabricated credit; and
 - Historian observation can never authorize monetary completion.
 
-Still-open product/launch configuration includes the production token symbol,
-SNS tokenomics and distribution, fallback controllers and recovery policy,
-initial reserve quantity, final fee floats, production Account/subaccount
-topology, cycles operations, public metadata/domain, and final official SNS
-module hashes and canister IDs. Those choices do not make the monetary
-algorithms unfinished.
+The active [sale-free acceptance contract](deploy/acceptance/genesis-contract.json)
+fixes IO/IO token identity and 1B genesis supply: 30 IO operator, 100M IO
+Vote-only Jupiter and 899,999,970 IO reserve, with zero sale/treasury/future-Swap
+allocations. It uses the reviewed standard framework, direct Normal genesis,
+an installed parked Swap, and sole Governance/Root controllers after handoff.
+Canonical observations derive 30 ICP of backing, a 20 ICP permanent-capital
+increment and an independent 10 ICP anchor; fees and cycles are additional.
+
+Open launch requirements include actual Jupiter canister voting integration,
+live permanent-neuron visibility/authority, observed identities/Accounts and
+controllers, cycles operations, current source-bound release/rehearsal evidence,
+and the separate fresh owned-topology lifecycle. Production SNS canister IDs
+and domain operations remain distinct from the frozen acceptance allowlist.
 
 ## Simplicity architecture
 

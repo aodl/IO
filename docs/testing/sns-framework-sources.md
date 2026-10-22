@@ -99,8 +99,9 @@ their official proposal provenance.
 The `same-source` scope requires a clean checkout and builds all six SNS
 components (Governance, Root, Ledger, Index, Swap and Archive), binding their
 DIDs in the bundle. Non-SNS system fixtures still use the official baseline.
-This build scope is not itself evidence of a successful self-deployed sale;
-the acceptance real-sale driver must separately prove that lifecycle.
+This build scope does not prove acceptance launch behavior. The acceptance
+direct-genesis driver separately verifies the frozen official framework and
+complete sale-free IO lifecycle.
 
 The runner records the IC commit, branch, merge base, clean/dirty state, tracked
 diff SHA-256, Bazel version, exact target, candidate DID hash, artifact hashes,

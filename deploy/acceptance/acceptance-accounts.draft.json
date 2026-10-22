@@ -6,14 +6,14 @@
       "icp_account_identifier": null,
       "icrc_account": {
         "owner": "h7y7s-kyaaa-aaaas-amxrq-cai",
-        "subaccount_hex": "TBD_DERIVED_AFTER_GENESIS_CONTROLLER_MEMO_5282519294002868273"
+        "subaccount_hex": "39d4b187d2057bdc49dc3078c0a8e97efb4dc09c93ce6d35c699665f35b1e053"
       },
       "initial_expected_balance_e8s": 3000000000,
       "name": "sns_governance_neuron_stake",
       "owner": "h7y7s-kyaaa-aaaas-amxrq-cai",
       "role": "initial claim-bearing governance neuron",
       "steady_state_classification": "claim-bearing while staked",
-      "subaccount_hex": "TBD_DERIVED_AFTER_GENESIS_CONTROLLER_MEMO_5282519294002868273",
+      "subaccount_hex": "39d4b187d2057bdc49dc3078c0a8e97efb4dc09c93ce6d35c699665f35b1e053",
       "user_funding_required": false
     },
     {
@@ -22,14 +22,14 @@
       "icp_account_identifier": null,
       "icrc_account": {
         "owner": "h7y7s-kyaaa-aaaas-amxrq-cai",
-        "subaccount_hex": "TBD_DERIVED_AFTER_GENESIS_CONTROLLER_MEMO_5282531345630769201"
+        "subaccount_hex": "d7a5e01a747275983dbccdf7b596d55c3816844ac7b3731fa8d6c90e9922fc40"
       },
-      "initial_expected_balance_e8s": 89999996700000000,
+      "initial_expected_balance_e8s": 89999997000000000,
       "name": "sns_reserve_transport_neuron_stake",
       "owner": "h7y7s-kyaaa-aaaas-amxrq-cai",
       "role": "excluded one-time reserve transport",
       "steady_state_classification": "permanently excluded; normally zero after migration",
-      "subaccount_hex": "TBD_DERIVED_AFTER_GENESIS_CONTROLLER_MEMO_5282531345630769201",
+      "subaccount_hex": "d7a5e01a747275983dbccdf7b596d55c3816844ac7b3731fa8d6c90e9922fc40",
       "user_funding_required": false
     },
     {
@@ -72,11 +72,11 @@
         "owner": "hd4fd-5yaaa-aaaas-amxtq-cai",
         "subaccount_hex": null
       },
-      "initial_expected_balance_e8s": 300000000,
+      "initial_expected_balance_e8s": 0,
       "name": "sns_swap",
       "owner": "hd4fd-5yaaa-aaaas-amxtq-cai",
-      "role": "small sale allocation pending distribution",
-      "steady_state_classification": "zero after successful finalization except canonically observed residual dust",
+      "role": "parked Swap; zero genesis allocation",
+      "steady_state_classification": "later IO transfers remain claim-bearing; never an exclusion",
       "subaccount_hex": null,
       "user_funding_required": false
     },
@@ -91,8 +91,8 @@
       "initial_expected_balance_e8s": 0,
       "name": "sns_icp_treasury",
       "owner": "h7y7s-kyaaa-aaaas-amxrq-cai",
-      "role": "sale proceeds retained by SNS Governance",
-      "steady_state_classification": "sale proceeds; excluded from IO claim backing and permanent capital",
+      "role": "unused Governance default ICP Account",
+      "steady_state_classification": "unexpected balances are never IO backing or permanent capital",
       "subaccount_hex": null,
       "user_funding_required": false
     },

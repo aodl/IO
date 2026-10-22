@@ -12,7 +12,7 @@ use io_production_wiring::{
     PRODUCTION_IO_NNS_NEURON_MANAGER_CANISTER_ID, PRODUCTION_IO_STREAM_MANAGER_CANISTER_ID,
     PROTECTED_IO_NNS_NEURON_ID,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -103,7 +103,7 @@ struct PermanentNeuron {
     controller: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Economics {
     schema: String,
@@ -127,25 +127,22 @@ struct Economics {
     initial_voting_period_seconds: u64,
     wait_for_quiet_deadline_increase_seconds: u64,
     developer_voting_power_percent: u64,
-    sale_allocation_source: String,
-    sale_price_constraint: String,
     governance_neuron: GenesisNeuron,
     jupiter_governance_neuron: GenesisNeuron,
     reserve_transport_neuron: GenesisNeuron,
     treasury_e8s: u128,
     future_swap_e8s: u128,
-    minimum_participants: u64,
-    neurons_fund_participation: bool,
-    gross_sale_reference_price: String,
+    swap_e8s: u128,
+    initial_redemption_backing: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct GenesisNeuron {
     memo_domain: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     io_reward_eligible: Option<bool>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     controller_source: Option<String>,
     stake_e8s: Value,
     memo: u64,
@@ -268,15 +265,8 @@ fn expected_accounts(root: &Path) -> Result<Value, String> {
     let jupiter = inputs["acceptance_jupiter_source_principal"]
         .as_str()
         .ok_or("Jupiter input must be text")?;
-    let sale_allocation = planned_sale_allocation(&inputs)?;
-    let reserve_balance = sale_allocation.map(reserve_stake).transpose()?.map_or_else(
-        || Value::String("TBD_RESERVE_TRANSPORT_STAKE_E8S".into()),
-        |value| json!(value),
-    );
-    let swap_balance = sale_allocation.map_or_else(
-        || Value::String("TBD_ACCEPTANCE_SALE_IO_ALLOCATION_E8S".into()),
-        |value| json!(value),
-    );
+    let reserve_balance = json!(reserve_stake()?);
+    let swap_balance = json!(0);
 
     let mut accounts = Vec::new();
     if !is_placeholder(controller) {
@@ -390,9 +380,9 @@ fn expected_accounts(root: &Path) -> Result<Value, String> {
             role(&manifest, "sns_swap")?,
             None,
             "IO",
-            "small sale allocation pending distribution",
+            "parked Swap; zero genesis allocation",
             swap_balance,
-            "zero after successful finalization except canonically observed residual dust",
+            "later IO transfers remain claim-bearing; never an exclusion",
             false,
             false,
         )?,
@@ -401,9 +391,9 @@ fn expected_accounts(root: &Path) -> Result<Value, String> {
             role(&manifest, "sns_governance")?,
             None,
             "ICP",
-            "sale proceeds retained by SNS Governance",
+            "unused Governance default ICP Account",
             json!(0),
-            "sale proceeds; excluded from IO claim backing and permanent capital",
+            "unexpected balances are never IO backing or permanent capital",
             false,
             false,
         )?,
@@ -589,15 +579,6 @@ fn is_placeholder(value: &str) -> bool {
     value.starts_with("TBD_")
 }
 
-fn contains_placeholder(value: &Value) -> bool {
-    match value {
-        Value::String(text) => text.contains("TBD_"),
-        Value::Array(values) => values.iter().any(contains_placeholder),
-        Value::Object(values) => values.values().any(contains_placeholder),
-        _ => false,
-    }
-}
-
 fn named_account<'a>(manifest: &'a Value, name: &str) -> Result<&'a Value, String> {
     manifest["accounts"]
         .as_array()
@@ -620,21 +601,11 @@ fn optional_observed_u128(value: &Value, field: &str) -> Result<Option<u128>, St
     }
 }
 
-fn planned_sale_allocation(inputs: &Value) -> Result<Option<u128>, String> {
-    let value = &inputs["sale_plan"]["initial_swap_io_allocation_e8s"];
-    if value.as_str().is_some_and(is_placeholder) {
-        return Ok(None);
-    }
-    value_u128(value, "sale_plan.initial_swap_io_allocation_e8s").map(Some)
-}
-
-fn reserve_stake(sale_allocation_e8s: u128) -> Result<u128, String> {
+fn reserve_stake() -> Result<u128, String> {
     TOTAL_IO_E8S
         .checked_sub(GOVERNANCE_IO_E8S)
         .and_then(|value| value.checked_sub(JUPITER_GOVERNANCE_IO_E8S))
-        .and_then(|value| value.checked_sub(sale_allocation_e8s))
-        .filter(|value| *value > IO_FEE_E8S)
-        .ok_or_else(|| "sale allocation leaves no usable reserve-transport stake".into())
+        .ok_or_else(|| "genesis allocation overflow".into())
 }
 
 fn capitalization_plan(
@@ -646,7 +617,7 @@ fn capitalization_plan(
         io_core_model::claim_supply(total_supply_e8s, stream_reserve_e8s, excluded_balances_e8s)
             .map_err(|error| format!("canonical C0 observation is invalid: {error:?}"))?;
     if claims_e8s == 0 {
-        return Err("canonical C0 must be positive after the sale".into());
+        return Err("canonical C0 must be positive after direct genesis".into());
     }
     let twice_claims = claims_e8s.checked_mul(2).ok_or("2*C0 overflows u128")?;
     let quotient = twice_claims / 3;
@@ -662,16 +633,21 @@ fn capitalization_plan(
     })
 }
 
-fn require_successful_finalization(
-    observed: bool,
-    swap_lifecycle: &str,
-    governance_mode: &str,
-) -> Result<(), String> {
-    if observed && swap_lifecycle == "Committed" && governance_mode == "Normal" {
-        Ok(())
-    } else {
-        Err("successful sale finalization must be canonically observed as Committed/Normal".into())
+fn require_direct_genesis(observed: &Value) -> Result<(), String> {
+    if observed["observed"] != true
+        || observed["governance_mode"] != "Normal"
+        || observed["total_supply_e8s"] != json!(TOTAL_IO_E8S)
+        || observed["operator_stake_e8s"] != json!(GOVERNANCE_IO_E8S)
+        || observed["jupiter_stake_e8s"] != json!(JUPITER_GOVERNANCE_IO_E8S)
+        || observed["reserve_stake_e8s"] != json!(reserve_stake()?)
+        || observed["swap_io_e8s"] != 0
+        || observed["swap_icp_e8s"].as_u64().is_none()
+        || observed["accepted_icp_e8s"] != 0
+        || observed["swap_lifecycle"] != "Adopted"
+    {
+        return Err("canonical sale-free genesis observation mismatch".into());
     }
+    Ok(())
 }
 
 fn validate_manifest(manifest: &AcceptanceManifest) -> Result<(), String> {
@@ -751,10 +727,6 @@ fn validate_manifest(manifest: &AcceptanceManifest) -> Result<(), String> {
 fn validate_economics(e: &Economics) -> Result<(), String> {
     if e.schema != "io.sns.economics.v1"
         || e.developer_voting_power_percent != 100
-        || e.sale_allocation_source
-            != "required-inputs.draft.json#sale_plan.initial_swap_io_allocation_e8s"
-        || e.sale_price_constraint
-            != "accepted_direct_participation_icp_e8s == initial_swap_io_allocation_e8s"
         || e.governance_neuron.memo_domain != "IOGOV001"
         || e.jupiter_governance_neuron.memo_domain != "IOJUP001"
         || e.reserve_transport_neuron.memo_domain != "IORES001"
@@ -775,8 +747,7 @@ fn validate_economics(e: &Economics) -> Result<(), String> {
     if e.total_supply_e8s != TOTAL_IO_E8S
         || e.governance_neuron.stake_e8s != json!(GOVERNANCE_IO_E8S)
         || e.jupiter_governance_neuron.stake_e8s != json!(JUPITER_GOVERNANCE_IO_E8S)
-        || e.reserve_transport_neuron.stake_e8s
-            != "TOTAL_SUPPLY_E8S - GOVERNANCE_STAKE_E8S - JUPITER_GOVERNANCE_STAKE_E8S - SALE_IO_ALLOCATION_E8S"
+        || e.reserve_transport_neuron.stake_e8s != json!(reserve_stake()?)
     {
         return Err("parameterized genesis 1B arithmetic mismatch".into());
     }
@@ -808,11 +779,10 @@ fn validate_economics(e: &Economics) -> Result<(), String> {
     if e.transfer_fee_e8s != IO_FEE_E8S
         || e.treasury_e8s != 0
         || e.future_swap_e8s != 0
-        || e.minimum_participants != 1
-        || e.neurons_fund_participation
-        || e.gross_sale_reference_price != "1 ICP per IO"
+        || e.swap_e8s != 0
+        || e.initial_redemption_backing != "1 ICP per claim-bearing IO"
     {
-        return Err("sale economics mismatch".into());
+        return Err("zero genesis allocations or backing invariant changed".into());
     }
     if e.maximum_dissolve_delay_bonus_basis_points != 0
         || e.maximum_neuron_age_seconds != 0
@@ -834,158 +804,58 @@ fn validate_economics(e: &Economics) -> Result<(), String> {
     Ok(())
 }
 
-fn scalar(value: &Value, fallback: &str) -> String {
-    value
-        .as_u64()
-        .map(|value| value.to_string())
-        .or_else(|| value.as_str().map(str::to_string))
-        .unwrap_or_else(|| fallback.to_string())
-}
-
-// These are early deployment checks, not a substitute for the pinned SNS parser.
-fn validate_sale_plan(e: &Economics, inputs: &Value, sealed: bool) -> Result<(), String> {
-    let plan = &inputs["sale_plan"];
-    let Some(sale) = planned_sale_allocation(inputs)? else {
-        return if sealed {
-            Err("unresolved sale allocation".into())
-        } else {
-            Ok(())
-        };
-    };
-    let count = value_u128(&plan["basket_count"], "basket_count")?;
-    let interval = value_u128(&plan["basket_interval_seconds"], "basket_interval_seconds")?;
-    let minimum = value_u128(
-        &plan["minimum_participant_icp_e8s"],
-        "minimum_participant_icp_e8s",
-    )?;
-    let required = count
-        .checked_mul(e.minimum_neuron_stake_e8s + e.transfer_fee_e8s)
-        .ok_or("basket minimum overflow")?;
-    if !(2..=10).contains(&count)
-        || interval == 0
-        || (count - 1)
-            .checked_mul(interval)
-            .is_none_or(|delay| delay > u128::from(e.maximum_dissolve_delay_seconds))
-        || minimum < required
-        || minimum > sale
+fn validate_genesis_plan(inputs: &Value, require_jupiter: bool) -> Result<(), String> {
+    if inputs.get("sale_plan").is_some()
+        || inputs.get("proposal_url").is_some()
+        || inputs["final_token_name"] != "IO"
+        || inputs["final_token_symbol"] != "IO"
+        || inputs["genesis_controller_principal"]
+            != "zkkkd-i34qc-367ln-e2u7o-ezznu-dkfqh-gtfvz-cviph-6qa4v-evtfs-wqe"
+        || inputs["project_url"] != "https://ghrkr-eyaaa-aaaas-amxvq-cai.icp0.io/"
     {
-        return Err(
-            "sale basket cannot fund the minimum stakes and per-neuron fees at 1 ICP/IO".into(),
-        );
+        return Err("direct-genesis identity, branding or obsolete sale input mismatch".into());
     }
-    if sealed {
-        if plan["approved_for_deployment"] != true {
-            return Err("sale candidate has not been approved for deployment".into());
-        }
-        for (field, minimum) in [("final_token_name", 4), ("final_token_symbol", 3)] {
-            let value = inputs[field]
-                .as_str()
-                .ok_or_else(|| format!("missing {field}"))?;
-            if is_placeholder(value) || value.len() < minimum {
-                return Err(format!(
-                    "{field} is unresolved or below the SNS minimum length {minimum}"
-                ));
-            }
-        }
+    if require_jupiter
+        && inputs["acceptance_jupiter_sns_rewards_canister_id"]
+            .as_str()
+            .is_none_or(is_placeholder)
+    {
+        return Err("ACCEPTANCE_JUPITER_SNS_REWARDS_CANISTER_ID unresolved".into());
     }
     Ok(())
 }
 
+fn parked_swap_contract() -> Value {
+    serde_json::from_str(include_str!(
+        "../../../deploy/acceptance/genesis-contract.json"
+    ))
+    .expect("reviewed genesis contract")
+}
+
 fn render_sns_yaml(e: &Economics, overlay: &Overlay, inputs: &Value) -> Result<String, String> {
     validate_economics(e)?;
-    let dapps = overlay
-        .dapp_canisters
-        .values()
-        .map(|principal| format!("  - \"{principal}\""))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let sale_allocation = planned_sale_allocation(inputs)?;
-    let sale = sale_allocation.map_or_else(
-        || "TBD_ACCEPTANCE_SALE_IO_ALLOCATION_E8S".to_string(),
-        |value| value.to_string(),
-    );
-    let reserve_stake = match sale_allocation {
-        Some(value) => reserve_stake(value)?.to_string(),
-        None => "TBD_RESERVE_TRANSPORT_STAKE_E8S".to_string(),
-    };
-    let minimum_participant = scalar(
-        &inputs["sale_plan"]["minimum_participant_icp_e8s"],
-        "TBD_ACCEPTANCE_MINIMUM_PARTICIPANT_ICP_E8S",
-    );
-    let controller = scalar(
-        &inputs["genesis_controller_principal"],
-        "TBD_GENESIS_CONTROLLER_PRINCIPAL",
-    );
-    let jupiter_governance_controller = &overlay.jupiter_sns_rewards_canister_id;
-    // JSON strings are also YAML quoted scalars; paths/metadata cannot inject YAML.
-    let quoted = |key: &str, fallback: &str| json!(scalar(&inputs[key], fallback)).to_string();
-    let logo = quoted("sns_logo_path", "TBD_SNS_LOGO_PATH");
-    let name = quoted("final_token_name", "TBD_FINAL_TOKEN_NAME");
-    let symbol = quoted("final_token_symbol", "TBD_FINAL_TOKEN_SYMBOL");
-    let proposal_url = quoted("proposal_url", "TBD_PROPOSAL_URL");
-    let project_url = quoted("project_url", "TBD_PROJECT_URL");
-    let basket_count = scalar(&inputs["sale_plan"]["basket_count"], "TBD_BASKET_COUNT");
-    let basket_interval = scalar(
-        &inputs["sale_plan"]["basket_interval_seconds"],
-        "TBD_BASKET_INTERVAL_SECONDS",
-    );
-    let start_time = scalar(
-        &inputs["sale_plan"]["start_time"],
-        "TBD_ACCEPTANCE_SALE_START_TIME",
-    );
-    let duration = scalar(
-        &inputs["sale_plan"]["duration_seconds"],
-        "TBD_ACCEPTANCE_SALE_DURATION_SECONDS",
-    );
-    Ok(format!(
-        "# Generated from canonical-sns-economics.json + {environment}-identity-overlay.json.\n\
-name: {name}\n\
-description: IO protocol ({environment}) small-sale launch\n\
-NnsProposal:\n  title: IO small-sale {environment} launch\n  url: {proposal_url}\n  summary: IO small-sale governance and protocol {environment} launch.\n\
-logo: {logo}\n\
-url: {project_url}\n\
-fallback_controller_principals:\n  - {fallback}\n\
-dapp_canisters:\n{dapps}\n\
-Token:\n  name: {name}\n  symbol: {symbol}\n  transaction_fee: {fee} e8s\n  logo: {logo}\n\
-Proposals:\n  rejection_fee: {reject} e8s\n  initial_voting_period: {initial_voting_period} seconds\n  maximum_wait_for_quiet_deadline_extension: {wait_for_quiet} seconds\n\
-Neurons:\n  minimum_creation_stake: {minimum_stake} e8s\n\
-Voting:\n  minimum_dissolve_delay: {minimum_delay} seconds\n  MaximumVotingPowerBonuses:\n    DissolveDelay:\n      duration: {maximum_delay} seconds\n      bonus: {dissolve_bonus}%\n    Age:\n      duration: {maximum_age} seconds\n      bonus: {age_bonus}%\n  RewardRate:\n    initial: {initial_reward}%\n    final: {final_reward}%\n    transition_duration: {reward_transition} seconds\n\
-Distribution:\n  Neurons:\n    - principal: {controller}\n      dissolve_delay: {governance_delay} seconds\n      memo: {governance_memo}\n      stake: {governance_stake} e8s\n      vesting_period: 0 seconds\n    - principal: {jupiter_governance_controller}\n      dissolve_delay: {jupiter_governance_delay} seconds\n      memo: {jupiter_governance_memo}\n      stake: {jupiter_governance_stake} e8s\n      vesting_period: 0 seconds\n    - principal: {controller}\n      dissolve_delay: 0 seconds\n      memo: {reserve_memo}\n      stake: {reserve_stake} e8s\n      vesting_period: 0 seconds\n  InitialBalances:\n    treasury: 0 e8s\n    swap: {sale} e8s\n  total: {total} e8s\n\
-Swap:\n  minimum_participants: 1\n  minimum_direct_participation_icp: {sale} e8s\n  maximum_direct_participation_icp: {sale} e8s\n  minimum_participant_icp: {minimum_participant} e8s\n  maximum_participant_icp: {sale} e8s\n  start_time: {start_time}\n  duration: {duration} seconds\n  neurons_fund_participation: false\n  VestingSchedule:\n    events: {basket_count}\n    interval: {basket_interval} seconds\n  confirmation_text: IO {environment} sale at a gross reference price of 1 ICP per IO.\n",
-        initial_voting_period = e.initial_voting_period_seconds,
-        wait_for_quiet = e.wait_for_quiet_deadline_increase_seconds,
-        dissolve_bonus = e.maximum_dissolve_delay_bonus_basis_points / 100,
-        maximum_age = e.maximum_neuron_age_seconds,
-        age_bonus = e.maximum_age_bonus_basis_points / 100,
-        initial_reward = e.initial_reward_rate_basis_points / 100,
-        final_reward = e.final_reward_rate_basis_points / 100,
-        reward_transition = e.reward_rate_transition_seconds,
-        environment = overlay.environment,
-        name = name,
-        symbol = symbol,
-        fallback = overlay.fallback_controller_principal,
-        fee = e.transfer_fee_e8s,
-        reject = e.proposal_reject_cost_e8s,
-        minimum_stake = e.minimum_neuron_stake_e8s,
-        minimum_delay = e.minimum_voting_dissolve_delay_seconds,
-        maximum_delay = e.maximum_dissolve_delay_seconds,
-        governance_delay = e.governance_neuron.dissolve_delay_seconds,
-        governance_memo = e.governance_neuron.memo,
-        governance_stake = e.governance_neuron.stake_e8s,
-        jupiter_governance_controller = jupiter_governance_controller,
-        jupiter_governance_delay = e.jupiter_governance_neuron.dissolve_delay_seconds,
-        jupiter_governance_memo = e.jupiter_governance_neuron.memo,
-        jupiter_governance_stake = e.jupiter_governance_neuron.stake_e8s,
-        reserve_memo = e.reserve_transport_neuron.memo,
-        reserve_stake = reserve_stake,
-        sale = sale,
-        total = e.total_supply_e8s,
-        minimum_participant = minimum_participant,
-        controller = controller,
-        logo = logo,
-        start_time = start_time,
-        duration = duration,
-    ))
+    let manifest = approved_sns_manifest();
+    let mut version = serde_json::Map::new();
+    for component in ["governance", "root", "ledger", "index", "swap", "archive"] {
+        let hash = manifest
+            .source_sha256(&format!("sns_{component}"))
+            .ok_or("official module hash missing")?;
+        version.insert(
+            format!("{component}_wasm_hash"),
+            json!(hex::decode(hash).map_err(|e| e.to_string())?),
+        );
+    }
+    // JSON is a strict YAML subset. Values are typed e8s/seconds, with no sale parser.
+    serde_json::to_string_pretty(&json!({
+        "schema":"io.acceptance.direct-sns-genesis.v1", "environment":overlay.environment,
+        "token_name":"IO", "token_symbol":"IO", "display_name":"IO Protocol",
+        "description":format!("IO protocol ({}) direct sale-free genesis",overlay.environment),
+        "project_url":inputs["project_url"], "logo_path":inputs["sns_logo_path"],
+        "operator":inputs["genesis_controller_principal"], "jupiter":overlay.jupiter_sns_rewards_canister_id,
+        "dapp_canisters":overlay.dapp_canisters.values().collect::<Vec<_>>(),
+        "economics":e, "framework_version":version,
+        "parked_swap":parked_swap_contract()["parked_swap"]
+    })).map(|text| text+"\n").map_err(|error|error.to_string())
 }
 
 fn validate_rendered_yaml(root: &Path, e: &Economics) -> Result<(), String> {
@@ -1064,7 +934,7 @@ fn validate_rendered_yaml(root: &Path, e: &Economics) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_static_artifacts(root: &Path, sealed: bool) -> Result<(), String> {
+fn validate_static_artifacts(root: &Path) -> Result<(), String> {
     let required = [
         "acceptance-manifest.json",
         "sns-source-baseline.json",
@@ -1072,7 +942,7 @@ fn validate_static_artifacts(root: &Path, sealed: bool) -> Result<(), String> {
         "acceptance-identity-overlay.json",
         "production-identity-overlay.json",
         "required-inputs.draft.json",
-        "sale-contract.json",
+        "genesis-contract.json",
         "launch-observation.draft.json",
         "genesis-neurons.draft.json",
         "stream-exclusions.draft.json",
@@ -1093,26 +963,7 @@ fn validate_static_artifacts(root: &Path, sealed: bool) -> Result<(), String> {
         }
     }
     let inputs: Value = read_json(root, &format!("{DIR}/required-inputs.draft.json"))?;
-    if let Some(sale_allocation) = planned_sale_allocation(&inputs)? {
-        let reserve = reserve_stake(sale_allocation)?;
-        if GOVERNANCE_IO_E8S
-            .checked_add(reserve)
-            .and_then(|value| value.checked_add(JUPITER_GOVERNANCE_IO_E8S))
-            .and_then(|value| value.checked_add(sale_allocation))
-            != Some(TOTAL_IO_E8S)
-        {
-            return Err(
-                "resolved governance + Jupiter + reserve + sale distribution is not 1B IO".into(),
-            );
-        }
-        let minimum_participant = value_u128(
-            &inputs["sale_plan"]["minimum_participant_icp_e8s"],
-            "sale_plan.minimum_participant_icp_e8s",
-        )?;
-        if minimum_participant == 0 || minimum_participant > sale_allocation {
-            return Err("sale minimum participant amount is outside the fixed sale".into());
-        }
-    }
+    validate_genesis_plan(&inputs, false)?;
     let acceptance_overlay = overlay(root, "acceptance")?;
     if inputs["acceptance_jupiter_sns_rewards_canister_id"]
         != acceptance_overlay.jupiter_sns_rewards_canister_id
@@ -1120,114 +971,6 @@ fn validate_static_artifacts(root: &Path, sealed: bool) -> Result<(), String> {
         return Err(
             "acceptance Jupiter SNS Rewards input and identity overlay must match exactly".into(),
         );
-    }
-    if sealed && is_placeholder(&acceptance_overlay.jupiter_sns_rewards_canister_id) {
-        return Err(
-            "sealed acceptance package requires ACCEPTANCE_JUPITER_SNS_REWARDS_CANISTER_ID".into(),
-        );
-    }
-    if sealed && contains_placeholder(&inputs) {
-        return Err("sealed acceptance package contains unresolved TBD inputs".into());
-    }
-    if sealed {
-        let manifest = manifest(root)?;
-        let controller = inputs["genesis_controller_principal"]
-            .as_str()
-            .ok_or("sealed genesis controller must be text")?;
-        let jupiter = inputs["acceptance_jupiter_source_principal"]
-            .as_str()
-            .ok_or("sealed Jupiter principal must be text")?;
-        let jupiter_governance = principal(
-            &acceptance_overlay.jupiter_sns_rewards_canister_id,
-            "sealed acceptance Jupiter SNS Rewards",
-        )?;
-        let controller = principal(controller, "sealed genesis controller")?;
-        let jupiter = principal(jupiter, "sealed Jupiter")?;
-        let forbidden = BTreeSet::from([
-            principal(
-                PRODUCTION_IO_STREAM_MANAGER_CANISTER_ID,
-                "production Stream",
-            )?,
-            principal(
-                PRODUCTION_IO_NNS_NEURON_MANAGER_CANISTER_ID,
-                "production NNS manager",
-            )?,
-            principal(PRODUCTION_IO_HISTORIAN_CANISTER_ID, "production Historian")?,
-            principal(PRODUCTION_FRONTEND_CANISTER_ID, "production Frontend")?,
-            principal(JUPITER_FAUCET_CANISTER_ID, "production Jupiter")?,
-            principal(
-                PRODUCTION_JUPITER_SNS_REWARDS_CANISTER_ID,
-                "production Jupiter SNS Rewards",
-            )?,
-        ]);
-        if forbidden.contains(&controller)
-            || forbidden.contains(&jupiter)
-            || forbidden.contains(&jupiter_governance)
-        {
-            return Err("sealed acceptance input contains a production IO principal".into());
-        }
-        let role_principals = manifest
-            .roles
-            .values()
-            .map(|value| principal(value, "acceptance role"))
-            .collect::<Result<BTreeSet<_>, _>>()?;
-        if role_principals.contains(&controller)
-            || role_principals.contains(&jupiter)
-            || role_principals.contains(&jupiter_governance)
-            || jupiter_governance == controller
-            || jupiter_governance == jupiter
-            || manifest
-                .system_canisters
-                .values()
-                .map(|value| principal(value, "system canister"))
-                .collect::<Result<BTreeSet<_>, _>>()?
-                .contains(&jupiter)
-            || manifest
-                .system_canisters
-                .values()
-                .map(|value| principal(value, "system canister"))
-                .collect::<Result<BTreeSet<_>, _>>()?
-                .contains(&jupiter_governance)
-        {
-            return Err(
-                "sealed operator/Jupiter principals collide with distinct canister roles".into(),
-            );
-        }
-        let observation = &inputs["permanent_neuron_observation"];
-        if observation["neuron_id"] != json!(ACCEPTANCE_NEURON_ID)
-            || observation["controller"] != role(&manifest, "nns_manager")?
-            || observation["auto_stake_maturity"] != false
-            || observation["maturity_disbursement_in_progress"] != false
-            || observation["dissolve_state"] != "NotDissolving"
-            || observation["dissolve_delay_seconds"] != json!(PERMANENT_DELAY_SECONDS)
-            || observation["cached_stake_e8s"]
-                .as_u64()
-                .is_none_or(|value| value == 0)
-        {
-            return Err("sealed permanent-neuron observation violates launch invariants".into());
-        }
-        for name in [
-            "acceptance-identity-overlay.json",
-            "acceptance-accounts.draft.json",
-            "genesis-neurons.draft.json",
-            "stream-exclusions.draft.json",
-            "funding.draft.json",
-            "io-init-configs.draft.json",
-            "controller-topology.draft.json",
-            "sale-contract.json",
-        ] {
-            let value: Value = read_json(root, &format!("{DIR}/{name}"))?;
-            if contains_placeholder(&value) {
-                return Err(format!(
-                    "sealed acceptance artifact still contains TBD: {name}"
-                ));
-            }
-        }
-        let yaml = fs::read_to_string(root.join(format!("{DIR}/acceptance-sns-init.draft.yaml")))
-            .map_err(|err| format!("read sealed acceptance YAML: {err}"))?;
-        if yaml.contains("TBD_") {
-            return Err("sealed acceptance SNS YAML still contains TBD".into());
-        }
     }
     let exclusions: Value = read_json(root, &format!("{DIR}/stream-exclusions.draft.json"))?;
     let account_manifest: Value =
@@ -1256,6 +999,11 @@ fn validate_static_artifacts(root: &Path, sealed: bool) -> Result<(), String> {
         || genesis["neurons"][1]["memo"] != json!(JUPITER_GOVERNANCE_MEMO)
         || genesis["neurons"][1]["stake_e8s"] != json!(JUPITER_GOVERNANCE_IO_E8S)
         || genesis["neurons"][1]["stream_excluded"] != true
+        || genesis["neurons"][1]["permissions"] != json!(["Vote"])
+        || genesis["neurons"][2]["stake_e8s"] != json!(reserve_stake()?)
+        || genesis["neurons"][2]["dissolve_delay_seconds"] != 0
+        || genesis["swap_e8s"] != 0
+        || genesis["operator_controller"] != inputs["genesis_controller_principal"]
         || genesis["neurons"][2]["memo"] != json!(RESERVE_MEMO)
         || genesis["neurons"][2]["stream_excluded"] != true
         || genesis["jupiter_staking_account_derivations"]["production"]["controller"]
@@ -1306,29 +1054,26 @@ fn validate_static_artifacts(root: &Path, sealed: bool) -> Result<(), String> {
             "IO acceptance init configuration diverges from frozen identities/Accounts".into(),
         );
     }
-    let contract: Value = read_json(root, &format!("{DIR}/sale-contract.json"))?;
-    if contract["schema"] != "io.acceptance.sale-contract.v2"
+    let contract: Value = read_json(root, &format!("{DIR}/genesis-contract.json"))?;
+    let parked = &contract["parked_swap"];
+    if contract != parked_swap_contract()
+        || contract["schema"] != "io.acceptance.genesis-contract.v1"
         || contract["reviewed_sns_framework_id"] != approved_sns_framework()
+        || parked["sns_token_e8s"] != 0
+        || parked["should_auto_finalize"] != false
+        || parked["swap_start_timestamp_seconds"] != json!(u64::MAX)
+        || parked["swap_due_timestamp_seconds"] != json!(u64::MAX)
+        || parked["nns_proposal_id"] != 0
+        || parked["min_participants"] != 1
+        || parked["min_direct_participation_icp_e8s"] != 100_000_000
+        || parked["max_direct_participation_icp_e8s"] != 100_000_000
+        || parked["min_participant_icp_e8s"] != 100_000_000
+        || parked["max_participant_icp_e8s"] != 100_000_000
+        || parked["neurons_fund_participation"] != false
+        || parked["neuron_basket_construction_parameters"]
+            != json!({"count":2,"dissolve_delay_interval_seconds":86_400})
     {
-        return Err("sale semantic contract uses an unreviewed SNS framework".into());
-    }
-    for key in [
-        "finalization_observed",
-        "swap_committed_terminal_state_observed",
-        "governance_normal_observed",
-        "accepted_direct_participation_equals_sale_allocation",
-        "sale_icp_proceeds_retained_in_sns_governance_default_account",
-        "sale_proceeds_excluded_from_io_claim_backing",
-        "developer_voting_power_multiplier_percent",
-    ] {
-        let expected = if key == "developer_voting_power_multiplier_percent" {
-            json!(100)
-        } else {
-            json!(true)
-        };
-        if contract["required_observed_postconditions"][key] != expected {
-            return Err(format!("sale semantic contract missing {key}"));
-        }
+        return Err("frozen parked-Swap contract changed; sale activation is prohibited".into());
     }
     let baseline: Value = read_json(root, &format!("{DIR}/sns-source-baseline.json"))?;
     if baseline["schema"] != "io.acceptance.sns-source-baseline.v2"
@@ -1354,10 +1099,7 @@ pub(crate) fn validate_cli(command: &str, args: &[String]) -> Result<(), String>
         "acceptance_local_config" | "acceptance_local_accounts" => args.len() == 2,
         "acceptance_constructors" => args.len() == 1,
         "acceptance_checkpoint" => args.len() == 2 && matches!(args[0].as_str(), "A" | "B" | "C"),
-        "acceptance_preflight" => {
-            matches!(args, [])
-                || (args.len() == 1 && matches!(args[0].as_str(), "draft" | "sealed"))
-        }
+        "acceptance_preflight" => matches!(args, []) || (args.len() == 1 && args[0] == "draft"),
         "acceptance_render" => {
             args.is_empty()
                 || (args.len() == 1
@@ -1366,7 +1108,7 @@ pub(crate) fn validate_cli(command: &str, args: &[String]) -> Result<(), String>
         "acceptance_capitalization"
         | "acceptance_preframework"
         | "acceptance_preframework_pocketic"
-        | "acceptance_sale_real" => args.is_empty(),
+        | "acceptance_genesis_real" => args.is_empty(),
         _ => false,
     };
     if valid {
@@ -1378,14 +1120,14 @@ pub(crate) fn validate_cli(command: &str, args: &[String]) -> Result<(), String>
     }
 }
 
-pub(crate) fn validate(root: &Path, sealed: bool) -> Result<(), String> {
+pub(crate) fn validate(root: &Path) -> Result<(), String> {
     let manifest = manifest(root)?;
     let economics = economics(root)?;
     validate_manifest(&manifest)?;
     validate_economics(&economics)?;
     let inputs: Value = read_json(root, &format!("{DIR}/required-inputs.draft.json"))?;
-    validate_sale_plan(&economics, &inputs, sealed)?;
-    validate_static_artifacts(root, sealed)?;
+    validate_genesis_plan(&inputs, false)?;
+    validate_static_artifacts(root)?;
     validate_rendered_yaml(root, &economics)?;
 
     let accounts = expected_accounts(root)?;
@@ -1436,12 +1178,6 @@ pub(crate) fn local_config(root: &Path, context_path: &Path, output: &Path) -> R
         )?;
     }
     inputs["genesis_controller_principal"] = context["operator"].clone();
-    inputs["final_token_name"] = json!("IO Local Fixture");
-    inputs["final_token_symbol"] = json!("IOLT");
-    // The pinned NNS proposal validator requires forum.dfinity.org. The forum
-    // homepage is local test metadata, not a claimed deployment discussion.
-    inputs["proposal_url"] = json!("https://forum.dfinity.org/");
-    inputs["project_url"] = json!("https://example.invalid/io-local-fixture");
     inputs["sns_logo_path"] = context["logo_path"].clone();
     if inputs["sns_logo_path"].as_str().is_none() {
         return Err("missing local logo path".into());
@@ -1453,29 +1189,19 @@ pub(crate) fn local_config(root: &Path, context_path: &Path, output: &Path) -> R
     };
     let local = Overlay {
         environment: environment.into(),
-        // Candidate deferred registration route: uninstalled IO monetary canisters
-        // must retain operator installation authority until checkpoint C.
-        dapp_canisters: if context["root_install"] == true {
-            if context["local_fixture"] != true {
-                return Err("Root installation route requires explicit local fixture".into());
-            }
-            ["frontend", "historian", "nns_manager", "stream"]
-                .iter()
-                .map(|role| {
-                    (
-                        (*role).to_string(),
-                        context[*role].as_str().unwrap().to_string(),
-                    )
-                })
-                .collect()
-        } else {
-            BTreeMap::new()
-        },
+        dapp_canisters: ["frontend", "historian", "nns_manager", "stream"]
+            .iter()
+            .map(|role| {
+                (
+                    (*role).to_string(),
+                    context[*role].as_str().unwrap().to_string(),
+                )
+            })
+            .collect(),
         fallback_controller_principal: context["operator"].as_str().unwrap().into(),
         jupiter_sns_rewards_canister_id: context["jupiter"].as_str().unwrap().into(),
     };
-    let mut rendered = render_sns_yaml(&economics(root)?, &local, &inputs)?;
-    rendered = rendered.replace("dapp_canisters:\n\n", "dapp_canisters: []\n");
+    let rendered = render_sns_yaml(&economics(root)?, &local, &inputs)?;
     let mut file = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -1485,54 +1211,9 @@ pub(crate) fn local_config(root: &Path, context_path: &Path, output: &Path) -> R
 }
 
 pub(crate) fn capitalization(root: &Path) -> Result<String, String> {
-    validate(root, false)?;
-    let inputs: Value = read_json(root, &format!("{DIR}/required-inputs.draft.json"))?;
-    let sale_allocation = planned_sale_allocation(&inputs)?
-        .ok_or("sale allocation is unresolved; capitalization cannot be derived")?;
+    validate(root)?;
     let observation: Value = read_json(root, &format!("{DIR}/launch-observation.draft.json"))?;
-    let sale = &observation["sale_finalization"];
-    require_successful_finalization(
-        sale["observed"] == true,
-        sale["swap_lifecycle"].as_str().unwrap_or_default(),
-        sale["governance_mode"].as_str().unwrap_or_default(),
-    )?;
-    let accepted = value_u128(
-        &sale["accepted_direct_participation_icp_e8s"],
-        "accepted direct participation",
-    )?;
-    let neurons_fund = value_u128(
-        &sale["accepted_neurons_fund_participation_icp_e8s"],
-        "accepted Neurons' Fund participation",
-    )?;
-    let distributed = value_u128(
-        &sale["distributed_sale_neuron_stake_e8s"],
-        "distributed sale-neuron stake",
-    )?;
-    let io_fees = value_u128(&sale["sns_io_transfer_fees_burned_e8s"], "sale IO fees")?;
-    let swap_residual = value_u128(&sale["swap_io_residual_e8s"], "Swap IO residual")?;
-    let treasury = value_u128(
-        &sale["sns_icp_treasury_balance_e8s"],
-        "SNS ICP treasury balance",
-    )?;
-    let icp_fees = value_u128(&sale["icp_sweep_fees_burned_e8s"], "sale ICP sweep fees")?;
-    if accepted != sale_allocation || neurons_fund != 0 {
-        return Err("observed gross sale price is not exactly 1 ICP per IO".into());
-    }
-    if distributed
-        .checked_add(io_fees)
-        .and_then(|value| value.checked_add(swap_residual))
-        != Some(sale_allocation)
-    {
-        return Err(
-            "sale IO allocation does not reconcile across stakes, fees and residual".into(),
-        );
-    }
-    if treasury.checked_add(icp_fees) != Some(accepted) {
-        return Err(
-            "accepted ICP does not reconcile to retained SNS treasury proceeds and fees".into(),
-        );
-    }
-
+    require_direct_genesis(&observation["direct_genesis"])?;
     let checkpoint = &observation["post_reserve_migration"];
     let total_supply = value_u128(
         &checkpoint["ledger_total_supply_e8s"],
@@ -1555,12 +1236,11 @@ pub(crate) fn capitalization(root: &Path) -> Result<String, String> {
                 .into(),
         );
     }
-    let expected_reserve = reserve_stake(sale_allocation)?
+    let expected_reserve = reserve_stake()?
         .checked_sub(IO_FEE_E8S)
         .ok_or("reserve migration amount does not cover its IO fee")?;
     let expected_supply = TOTAL_IO_E8S
-        .checked_sub(io_fees)
-        .and_then(|value| value.checked_sub(IO_FEE_E8S))
+        .checked_sub(IO_FEE_E8S)
         .ok_or("post-migration supply underflow")?;
     if stream_reserve != expected_reserve || total_supply != expected_supply {
         return Err("post-reserve-migration balances do not match observed fee burns".into());
@@ -1613,13 +1293,6 @@ pub(crate) fn capitalization(root: &Path) -> Result<String, String> {
     };
     serde_json::to_string_pretty(&json!({
         "schema": "io.acceptance.capitalization-plan.v1",
-        "gross_sale_reference": {
-            "accepted_icp_e8s": accepted,
-            "sale_io_allocation_e8s": sale_allocation,
-            "price": "1 ICP per IO"
-        },
-        "sns_icp_treasury_proceeds_e8s": treasury,
-        "sns_icp_treasury_is_claim_backing": false,
         "canonical_claim_supply_c0_e8s": plan.claims_e8s,
         "operator_stream_backing_b0_e8s": plan.claim_backing_e8s,
         "stream_backing_before_e8s": backing_before,
@@ -1635,7 +1308,7 @@ pub(crate) fn capitalization(root: &Path) -> Result<String, String> {
 }
 
 pub(crate) fn preframework(root: &Path) -> Result<(), String> {
-    validate(root, false)?;
+    validate(root)?;
     for relative in [
         "canisters/io_stream_manager/io_stream_manager.did",
         "canisters/io_nns_neuron_manager/io_nns_neuron_manager.did",
@@ -1655,16 +1328,14 @@ pub(crate) fn preframework(root: &Path) -> Result<(), String> {
             }
         }
     }
-    const SAMPLE_SALE_E8S: u128 = 300_000_000;
-    let reserve = reserve_stake(SAMPLE_SALE_E8S)?;
-    // Assumed two-basket fixture: two SNS distribution fees plus reserve disbursement.
-    // The real sale must observe its own fees/residuals instead of borrowing this example.
-    let post_total = TOTAL_IO_E8S - 3 * IO_FEE_E8S;
+    let reserve = reserve_stake()?;
+    // Only the reserve disbursement burns a genesis transport fee.
+    let post_total = TOTAL_IO_E8S - IO_FEE_E8S;
     let post_reserve = reserve - IO_FEE_E8S;
     let plan = capitalization_plan(post_total, post_reserve, &[JUPITER_GOVERNANCE_IO_E8S])?;
-    let expected_claims = GOVERNANCE_IO_E8S + SAMPLE_SALE_E8S - 2 * IO_FEE_E8S;
+    let expected_claims = GOVERNANCE_IO_E8S;
     if plan.claims_e8s != expected_claims || plan.claim_backing_e8s != expected_claims {
-        return Err("canonical sale-token claims did not determine B0 exactly".into());
+        return Err("canonical genesis claims did not determine B0 exactly".into());
     }
     // Manual capitalization rounds K upward; it is not a Jupiter paired receipt.
     // Reapplying split_40_60 could move the rounded e8s into B and issue extra IO.
@@ -1707,8 +1378,8 @@ pub(crate) fn preframework(root: &Path) -> Result<(), String> {
     if redemption.gross_icp != 100_000_000 || redemption.net_icp != 99_990_000 {
         return Err("1:1 gross redemption or existing payout fee changed".into());
     }
-    eprintln!("✓ IO-side rehearsal under observed successful-sale assumptions");
-    eprintln!("  fixture gross sale price: 1 ICP/IO; sale proceeds remain outside B");
+    eprintln!("✓ IO-side sale-free genesis capitalization rehearsal");
+    eprintln!("  initial redemption backing: 1 ICP per claim-bearing IO; no sale price");
     eprintln!("  excluded 100000000 IO Jupiter voting stake adds zero to C0 and B0");
     eprintln!("  canonical C0=B0={} e8s", plan.claims_e8s);
     eprintln!(
@@ -1730,6 +1401,7 @@ pub(crate) fn real_framework_hook(root: &Path) -> Result<(), String> {
         .current_dir(root)
         .args([
             "test",
+            "--offline",
             "--locked",
             "-p",
             "e2e-real-canisters",
@@ -1755,6 +1427,7 @@ pub(crate) fn real_framework_hook(root: &Path) -> Result<(), String> {
         .current_dir(root)
         .args([
             "test",
+            "--offline",
             "--locked",
             "-p",
             "e2e-real-canisters",
@@ -1788,7 +1461,7 @@ mod tests {
             ("acceptance_preflight", vec!["seald"]),
             ("acceptance_preflight", vec!["sealed", "extra"]),
             ("acceptance_render", vec!["production", "extra"]),
-            ("acceptance_sale_real", vec!["extra"]),
+            ("acceptance_genesis_real", vec!["extra"]),
             ("acceptance_unknown", vec![]),
             ("acceptance_checkpoint", vec!["D", "fixture"]),
             ("acceptance_checkpoint", vec!["A", "fixture", "extra"]),
@@ -1800,9 +1473,8 @@ mod tests {
             )
             .is_err());
         }
-        for mode in ["draft", "sealed"] {
-            validate_cli("acceptance_preflight", &[mode.into()]).unwrap();
-        }
+        validate_cli("acceptance_preflight", &["draft".into()]).unwrap();
+        assert!(validate_cli("acceptance_preflight", &["sealed".into()]).is_err());
     }
 
     #[test]
@@ -1867,10 +1539,11 @@ mod tests {
         local_config(&root, &context_path, &output).unwrap();
         let text = fs::read_to_string(&output).unwrap();
         assert!(text.contains("local-fixture-not-for-deployment"));
-        assert!(text.contains("name: \"IO Local Fixture\""));
-        assert!(text.contains("dapp_canisters: []"));
-        assert!(text.contains("minimum_direct_participation_icp: 300000000 e8s"));
-        assert!(text.contains("maximum_direct_participation_icp: 300000000 e8s"));
+        let config: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(config["token_name"], "IO");
+        assert_eq!(config["token_symbol"], "IO");
+        assert_eq!(config["dapp_canisters"].as_array().unwrap().len(), 4);
+        assert_eq!(config["parked_swap"]["sns_token_e8s"], 0);
         assert!(!text.contains("TBD_"));
         assert!(local_config(&root, &context_path, &output).is_err());
         assert_eq!(
@@ -1893,9 +1566,13 @@ mod tests {
     fn production_proposal_text_does_not_claim_acceptance() {
         let root = repository_root();
         let rendered = render(&root, "production").unwrap();
-        for line in rendered.lines().filter(|line| !line.starts_with('#')) {
-            assert!(!line.contains("acceptance"), "{line}");
-        }
+        let config: Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(config["environment"], "production");
+        assert!(!config["description"]
+            .as_str()
+            .unwrap()
+            .contains("acceptance"));
+        assert_eq!(config["token_symbol"], "IO");
     }
 
     #[test]
@@ -1906,6 +1583,17 @@ mod tests {
         assert!(!(SALE_MEMO_START..=SALE_MEMO_END).contains(&GOVERNANCE_MEMO));
         assert!(!(SALE_MEMO_START..=SALE_MEMO_END).contains(&JUPITER_GOVERNANCE_MEMO));
         assert!(!(SALE_MEMO_START..=SALE_MEMO_END).contains(&RESERVE_MEMO));
+    }
+
+    #[test]
+    fn parked_opening_is_outside_the_entire_pinned_clock_range() {
+        // Pinned Swap's now_fn returns u64 nanoseconds, then divides by 1e9.
+        let maximum_clock_seconds = u64::MAX / 1_000_000_000;
+        let contract = parked_swap_contract();
+        for field in ["swap_start_timestamp_seconds", "swap_due_timestamp_seconds"] {
+            assert_eq!(contract["parked_swap"][field], u64::MAX);
+            assert!(contract["parked_swap"][field].as_u64().unwrap() > maximum_clock_seconds);
+        }
     }
 
     #[test]
@@ -1923,101 +1611,91 @@ mod tests {
     }
 
     #[test]
-    fn sale_candidate_and_locked_proposer_economics_reject_mutations() {
+    fn direct_genesis_rejects_branding_authority_and_sale_inputs() {
         let root = repository_root();
-        let e = economics(&root).unwrap();
-        let mut inputs: Value =
-            read_json(&root, &format!("{DIR}/required-inputs.draft.json")).unwrap();
-        validate_sale_plan(&e, &inputs, false).unwrap();
-        assert!(validate_sale_plan(&e, &inputs, true).is_err());
-        inputs["sale_plan"]["approved_for_deployment"] = json!(true);
-        inputs["final_token_name"] = json!("IO local test token");
-        inputs["final_token_symbol"] = json!("IOLT");
-        validate_sale_plan(&e, &inputs, true).unwrap();
+        let inputs: Value = read_json(&root, &format!("{DIR}/required-inputs.draft.json")).unwrap();
+        validate_genesis_plan(&inputs, false).unwrap();
+        assert!(validate_genesis_plan(&inputs, true).is_err());
         for (field, value) in [
-            ("basket_count", 1),
-            ("basket_count", 11),
-            ("basket_interval_seconds", 0),
-            ("minimum_participant_icp_e8s", 200_000_000),
+            ("final_token_name", json!("IO Local Fixture")),
+            ("final_token_symbol", json!("IOLT")),
+            (
+                "genesis_controller_principal",
+                json!(Principal::anonymous().to_text()),
+            ),
+            (
+                "sale_plan",
+                json!({"initial_swap_io_allocation_e8s":300_000_000}),
+            ),
+            ("proposal_url", json!("https://forum.dfinity.org/")),
         ] {
-            let mut invalid = inputs.clone();
-            invalid["sale_plan"][field] = json!(value);
-            assert!(validate_sale_plan(&e, &invalid, true).is_err(), "{field}");
+            let mut bad = inputs.clone();
+            bad[field] = value;
+            assert!(validate_genesis_plan(&bad, false).is_err(), "{field}");
         }
         for (field, value) in [
-            ("final_token_name", "IO"),
-            ("final_token_symbol", "IO"),
-            ("final_token_symbol", "TBD_FINAL_TOKEN_SYMBOL"),
-        ] {
-            let mut invalid = inputs.clone();
-            invalid[field] = json!(value);
-            assert!(validate_sale_plan(&e, &invalid, true).is_err());
-        }
-        for (field, value) in [
-            ("proposal_reject_cost_e8s", 10_000_000_000u64),
+            ("proposal_reject_cost_e8s", 1u64),
             ("minimum_neuron_stake_e8s", 1),
+            ("swap_e8s", 1),
         ] {
-            let mut invalid: Value =
+            let mut bad: Value =
                 read_json(&root, &format!("{DIR}/canonical-sns-economics.json")).unwrap();
-            invalid[field] = json!(value);
-            assert!(validate_economics(&serde_json::from_value(invalid).unwrap()).is_err());
+            bad[field] = json!(value);
+            assert!(validate_economics(&serde_json::from_value(bad).unwrap()).is_err());
         }
-        let mut invalid = economics(&root).unwrap();
-        invalid.governance_neuron.stake_e8s = json!(150_000_000);
-        assert!(validate_economics(&invalid).is_err());
     }
 
     #[test]
-    fn observed_sale_claims_drive_operator_capitalization_without_new_io() {
-        let sale_allocation = 1_000_000_000;
-        let sale_io_fee = IO_FEE_E8S;
-        let reserve = reserve_stake(sale_allocation).unwrap();
-        let supply_before_capitalization = TOTAL_IO_E8S - sale_io_fee - IO_FEE_E8S;
+    fn observed_genesis_claims_drive_exact_capitalization_without_issuance() {
+        let supply = TOTAL_IO_E8S - IO_FEE_E8S;
         let plan = capitalization_plan(
-            supply_before_capitalization,
-            reserve - IO_FEE_E8S,
-            &[JUPITER_GOVERNANCE_IO_E8S],
+            supply,
+            reserve_stake().unwrap() - IO_FEE_E8S,
+            &[0, JUPITER_GOVERNANCE_IO_E8S],
         )
         .unwrap();
-        assert_eq!(
-            plan.claims_e8s,
-            GOVERNANCE_IO_E8S + sale_allocation - sale_io_fee
-        );
-        assert_eq!(plan.claim_backing_e8s, plan.claims_e8s);
-        assert_eq!(plan.permanent_top_up_e8s, 2_666_660_000);
+        assert_eq!(plan.claims_e8s, 3_000_000_000);
+        assert_eq!(plan.claim_backing_e8s, 3_000_000_000);
+        assert_eq!(plan.permanent_top_up_e8s, 2_000_000_000);
         assert_eq!(plan.permanent_exact_remainder_thirds, 0);
-        assert_eq!(supply_before_capitalization, TOTAL_IO_E8S - 20_000);
-        let treasury_proceeds_e8s = sale_allocation - ICP_TRANSFER_FEE_E8S;
-        let state = EconomicState {
-            backing: Backing {
-                liquid: plan.claim_backing_e8s,
-                ..Backing::default()
-            },
-            claims: plan.claims_e8s,
-            active_backing: 0,
-            active_reward: 0,
-        };
-        assert_eq!(
-            io_core_model::claim_backing(state.backing),
-            Ok(plan.claims_e8s)
-        );
-        assert_ne!(treasury_proceeds_e8s, plan.claim_backing_e8s);
         assert_eq!(
             io_core_model::split_40_60(plan.claim_backing_e8s + plan.permanent_top_up_e8s),
             Ok(io_core_model::Split {
                 permanent: plan.permanent_top_up_e8s,
-                claim: plan.claim_backing_e8s,
+                claim: plan.claim_backing_e8s
             })
         );
     }
 
     #[test]
+    fn io_transferred_to_swap_remains_claim_bearing_after_fee_burn() {
+        let supply = TOTAL_IO_E8S - IO_FEE_E8S;
+        let reserve = reserve_stake().unwrap() - IO_FEE_E8S;
+        let exclusions = [0, JUPITER_GOVERNANCE_IO_E8S];
+        let before = capitalization_plan(supply, reserve, &exclusions).unwrap();
+        // A later transfer of existing liquid claims to Swap burns one fee.
+        // The destination balance is not subtracted from canonical claims.
+        let transferred = 100_000_000;
+        let remaining = before.claims_e8s - transferred - IO_FEE_E8S;
+        let after = capitalization_plan(supply - IO_FEE_E8S, reserve, &exclusions).unwrap();
+        assert_eq!(after.claims_e8s, remaining + transferred);
+        assert_eq!(
+            after.claim_backing_e8s,
+            before.claim_backing_e8s - IO_FEE_E8S
+        );
+        let accounts = expected_accounts(&repository_root()).unwrap();
+        assert_eq!(
+            named_account(&accounts, "sns_swap").unwrap()["excluded_from_claim_supply"],
+            false
+        );
+    }
+
+    #[test]
     fn moving_jupiter_stake_from_excluded_reserve_preserves_launch_economics() {
-        let sale = 1_000_000_000;
-        let old_reserve = TOTAL_IO_E8S - GOVERNANCE_IO_E8S - sale;
-        let new_reserve = reserve_stake(sale).unwrap();
+        let old_reserve = TOTAL_IO_E8S - GOVERNANCE_IO_E8S;
+        let new_reserve = reserve_stake().unwrap();
         assert_eq!(new_reserve + JUPITER_GOVERNANCE_IO_E8S, old_reserve);
-        let post_total = TOTAL_IO_E8S - 2 * IO_FEE_E8S;
+        let post_total = TOTAL_IO_E8S - IO_FEE_E8S;
         let old = capitalization_plan(post_total, old_reserve - IO_FEE_E8S, &[0]).unwrap();
         let new = capitalization_plan(
             post_total,
@@ -2101,27 +1779,13 @@ mod tests {
         assert_ne!(acceptance_account, wrong_memo);
         assert_eq!(
             JUPITER_GOVERNANCE_IO_E8S,
-            TOTAL_IO_E8S
-                - GOVERNANCE_IO_E8S
-                - reserve_stake(1_000_000_000).unwrap()
-                - 1_000_000_000
+            TOTAL_IO_E8S - GOVERNANCE_IO_E8S - reserve_stake().unwrap()
         );
     }
 
     #[test]
-    fn full_initial_swap_allocation_gives_developers_full_voting_multiplier() {
-        let initial_swap_amount = 1_000_000_000u128;
-        let total_swap_amount = initial_swap_amount;
-        let multiplier_percent = initial_swap_amount * 100 / total_swap_amount;
-        assert_eq!(multiplier_percent, 100);
-        let developer_voting_power = GOVERNANCE_IO_E8S + JUPITER_GOVERNANCE_IO_E8S;
-        assert!(GOVERNANCE_IO_E8S * 2 <= developer_voting_power);
-        assert!(JUPITER_GOVERNANCE_IO_E8S * 2 > developer_voting_power);
-    }
-
-    #[test]
     fn launch_reconciliation_and_redemption_use_the_canonical_one_to_one_rate() {
-        let claims = GOVERNANCE_IO_E8S + 300_000_000 - 2 * IO_FEE_E8S;
+        let claims = GOVERNANCE_IO_E8S;
         let state = EconomicState {
             backing: Backing {
                 liquid: claims,
@@ -2162,20 +1826,28 @@ mod tests {
     }
 
     #[test]
-    fn sale_finalization_requires_observation_not_only_the_contribution_cap() {
-        assert!(require_successful_finalization(false, "Committed", "Normal").is_err());
-        assert!(require_successful_finalization(true, "Open", "Normal").is_err());
-        assert!(
-            require_successful_finalization(true, "Committed", "PreInitializationSwap").is_err()
-        );
-        assert_eq!(
-            require_successful_finalization(true, "Committed", "Normal"),
-            Ok(())
-        );
+    fn direct_genesis_requires_observed_normal_and_parked_swap() {
+        let good = json!({"observed":true,"governance_mode":"Normal","total_supply_e8s":TOTAL_IO_E8S,"operator_stake_e8s":GOVERNANCE_IO_E8S,"jupiter_stake_e8s":JUPITER_GOVERNANCE_IO_E8S,"reserve_stake_e8s":reserve_stake().unwrap(),"swap_io_e8s":0,"swap_icp_e8s":0,"accepted_icp_e8s":0,"swap_lifecycle":"Adopted"});
+        require_direct_genesis(&good).unwrap();
+        let mut dusted = good.clone();
+        dusted["swap_icp_e8s"] = json!(100_000_000);
+        require_direct_genesis(&dusted).unwrap();
+        for (key, value) in [
+            ("observed", json!(false)),
+            ("governance_mode", json!("PreInitializationSwap")),
+            ("swap_lifecycle", json!("Committed")),
+            ("swap_icp_e8s", Value::Null),
+            ("accepted_icp_e8s", json!(1)),
+            ("swap_io_e8s", json!(1)),
+        ] {
+            let mut bad = good.clone();
+            bad[key] = value;
+            assert!(require_direct_genesis(&bad).is_err());
+        }
     }
 
     #[test]
-    fn checked_draft_package_is_self_consistent_and_sealed_mode_fails_closed() {
+    fn checked_draft_package_is_self_consistent_and_monolithic_sealing_is_rejected() {
         let root = repository_root();
         let mut manifest = manifest(&root).unwrap();
         manifest.reward_share_baseline_commit = approved_sns_manifest()
@@ -2187,12 +1859,8 @@ mod tests {
         assert!(validate_manifest(&manifest)
             .unwrap_err()
             .contains("reward-share baseline"));
-        validate(&root, false).unwrap();
-        let error = validate(&root, true).unwrap_err();
-        assert!(
-            error.contains("sale candidate")
-                || error.contains("ACCEPTANCE_JUPITER_SNS_REWARDS_CANISTER_ID")
-        );
+        validate(&root).unwrap();
+        assert!(validate_cli("acceptance_preflight", &["sealed".into()]).is_err());
     }
 
     #[test]
@@ -2210,7 +1878,7 @@ mod tests {
                 fs::copy(entry.path(), root.join(DIR).join(entry.file_name())).unwrap();
             }
         }
-        validate(&root, false).unwrap();
+        validate(&root).unwrap();
         let inputs_path = root.join(DIR).join("required-inputs.draft.json");
         let original_inputs = fs::read(&inputs_path).unwrap();
         let mut inputs: Value = serde_json::from_slice(&original_inputs).unwrap();
@@ -2239,7 +1907,7 @@ mod tests {
             let mut value: Value = serde_json::from_slice(&original).unwrap();
             *value.pointer_mut(pointer).unwrap() = replacement;
             fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
-            let result = validate(&root, false);
+            let result = validate(&root);
             fs::write(&path, original).unwrap();
             assert!(result.is_err(), "accepted mutation: {name}{pointer}");
         };
@@ -2262,6 +1930,36 @@ mod tests {
             "acceptance-identity-overlay.json",
             "/jupiter_sns_rewards_canister_id",
             json!(PRODUCTION_JUPITER_SNS_REWARDS_CANISTER_ID),
+        );
+        for (field, value) in [
+            ("sns_token_e8s", json!(1)),
+            ("should_auto_finalize", json!(true)),
+            (
+                "swap_start_timestamp_seconds",
+                json!(u64::MAX / 1_000_000_000),
+            ),
+            (
+                "swap_due_timestamp_seconds",
+                json!(u64::MAX / 1_000_000_000),
+            ),
+            ("min_participants", json!(0)),
+            ("nns_proposal_id", json!(144202)),
+            ("min_direct_participation_icp_e8s", json!(0)),
+            ("max_direct_participation_icp_e8s", json!(200_000_000)),
+            ("min_participant_icp_e8s", json!(0)),
+            ("max_participant_icp_e8s", json!(200_000_000)),
+            ("neurons_fund_participation", json!(true)),
+        ] {
+            mutate(
+                "genesis-contract.json",
+                &format!("/parked_swap/{field}"),
+                value,
+            );
+        }
+        mutate(
+            "genesis-neurons.draft.json",
+            "/neurons/1/permissions",
+            json!(["Vote", "ManagePrincipals"]),
         );
         // Exercise the allowlist itself as well as the full-package consistency gate.
         let overlay_path = root.join(DIR).join("acceptance-identity-overlay.json");

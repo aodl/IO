@@ -3,6 +3,18 @@
 IO is not live. Production activation, mainnet calls, controllers, funding and
 identities remain outside this local release closure.
 
+Active acceptance uses the [sale-free genesis contract](../../deploy/acceptance/genesis-contract.json)
+and [A/B/C runbook](../../deploy/acceptance/runbook.md): exact 1B IO, direct
+standard Normal governance, installed parked Swap and sole Root-controlled IO
+roles. The approved official framework source remains distinct from mandatory
+byte-for-byte installation checks. Canonical capitalization derives 30 IO of
+claims, 30 ICP backing, 20 ICP new permanent capital and a separate 10 ICP anchor.
+Actual Jupiter canister voting integration, live permanent-neuron visibility and
+the separate fresh owned-topology lifecycle remain external prerequisites.
+Conversion execution and new artifact evidence are reported in
+[acceptance status](../../deploy/acceptance/implementation-status.md). The release
+pair below retains historical authority for its own source only.
+
 ## Current local release
 
 The completed anchored-dynamic release is bound to:
@@ -48,10 +60,9 @@ change.
 Local completion does not establish mainnet readiness. Launch remains blocked
 on:
 
-- final human approval of the reviewed official SNS-W version after proposal
-  144202; its reward-share Governance and exact six-component Wasm/DID pins are
-  established locally, while required official-profile and acceptance results
-  are tracked separately;
+- exact installed-byte, six-component version and parked-Swap verification for
+  the accepted official SNS-W tuple after proposal 144202, plus the separate
+  fresh owned-topology lifecycle evidence;
 - final production SNS/tokenomics/configuration values and identities;
 - hosted test, security and reproducible-build CI on the exact documentation
   tail head;

@@ -27,7 +27,7 @@ pub struct Governance {
     pub proposals: Vec<(u64, EmptyRecord)>,
     pub in_flight_commands: Vec<(String, EmptyRecord)>,
     pub sns_metadata: Option<ManageSnsMetadata>,
-    pub neurons: Vec<(String, EmptyRecord)>,
+    pub neurons: Vec<(String, SnsNeuronRecord)>,
     pub genesis_timestamp_seconds: u64,
     pub target_version: Option<Version>,
     pub timers: Option<Timers>,
@@ -246,6 +246,7 @@ pub struct SnsProposalRecord {
     pub proposal: Option<SnsProposalPayload>,
     pub proposer: Option<NeuronId>,
     pub is_eligible_for_rewards: bool,
+    pub latest_tally: Option<io_governance_types::SnsTally>,
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]
@@ -347,6 +348,7 @@ pub enum Action {
     ManageNervousSystemParameters(Box<NervousSystemParameters>),
     RegisterDappCanisters(RegisterDappCanisters),
     UpgradeSnsControlledCanister(UpgradeSnsControlledCanister),
+    UpgradeSnsToNextVersion(EmptyRecord),
 }
 
 #[derive(Clone, Debug, CandidType, Deserialize, PartialEq, Eq)]

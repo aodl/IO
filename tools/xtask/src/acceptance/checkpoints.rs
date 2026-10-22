@@ -1,5 +1,5 @@
 //! Validation boundaries over a local rehearsal evidence directory.
-//! A has no dependency on observations that can only exist after the sale.
+//! A has no dependency on observations that can only exist after direct genesis.
 use super::*;
 use std::path::PathBuf;
 
@@ -25,6 +25,8 @@ pub(crate) fn accounts(context: &Value) -> Result<Value, String> {
     let account = |owner: Principal, sub: [u8; 32]| json!({"owner": owner.to_text(), "subaccount_hex": hex::encode(sub)});
     Ok(json!({
         "io_reserve": account(stream, STREAM_RESERVE_SUBACCOUNT),
+        "sns_token_treasury":account(governance,sns_distribution_subaccount(governance,0)),
+        "future_swap":account(governance,sns_distribution_subaccount(governance,1)),
         "liquid_icp": account(stream, STREAM_LIQUID_SUBACCOUNT),
         "excluded_staking_accounts": [
             account(governance, sns_neuron_subaccount(operator, RESERVE_MEMO)),
@@ -33,13 +35,13 @@ pub(crate) fn accounts(context: &Value) -> Result<Value, String> {
         "excluded_from_claims": true,
         "jupiter_excluded_from_rewards": true,
         "dynamic_anchor_e8s": DYNAMIC_ANCHOR_E8S,
-        "sale_treasury": {"owner": governance.to_text(), "subaccount_hex": hex::encode([0u8;32])}
+        "governance_default_icp": {"owner": governance.to_text(), "subaccount_hex": hex::encode([0u8;32])}
     }))
 }
 
 fn validate_context(root: &Path, context: &Value) -> Result<(), String> {
-    if context.get("root_install").is_some_and(|v| !v.is_boolean()) {
-        return Err("root_install must be a boolean".into());
+    if context["root_install"] != true {
+        return Err("only direct genesis with initial Root registration is supported".into());
     }
     let mut principals = BTreeSet::new();
     let forbidden = [
@@ -98,7 +100,18 @@ fn validate_context(root: &Path, context: &Value) -> Result<(), String> {
                 }
             }
             let inputs: Value = read_json(root, &format!("{DIR}/required-inputs.draft.json"))?;
-            validate_sale_plan(&economics(root)?, &inputs, true)?;
+            validate_genesis_plan(&inputs, true)?;
+            if !matches!(
+                context["permanent_observation_route"].as_str(),
+                Some("public-list-neurons" | "authorized-get-full-neuron")
+            ) || context["permanent_observation_route"] != inputs["permanent_observation_route"]
+                || context["permanent_observer"] != text(&inputs, "permanent_observer")?
+            {
+                return Err(
+                    "permanent observation route/caller differs from reviewed authority".into(),
+                );
+            }
+            principal(text(context, "permanent_observer")?, "permanent observer")?;
             for (name, input) in [
                 ("operator", "genesis_controller_principal"),
                 ("jupiter", "acceptance_jupiter_sns_rewards_canister_id"),
@@ -133,7 +146,6 @@ fn validate_context(root: &Path, context: &Value) -> Result<(), String> {
             for field in [
                 "final_token_name",
                 "final_token_symbol",
-                "proposal_url",
                 "project_url",
                 "sns_logo_path",
             ] {
@@ -219,6 +231,14 @@ fn validate_parser_binding(binding: &Value, adapter: &[u8], binary: &[u8]) -> Re
             != approved_sns_baseline()["parser"]["friendly_parser_sha256"]
         || binding["adapter_sha256"] != hex::encode(Sha256::digest(adapter))
         || binding["binary_sha256"] != hex::encode(Sha256::digest(binary))
+        || binding["genesis_contract_sha256"]
+            != hex::encode(Sha256::digest(include_bytes!(
+                "../../../../deploy/acceptance/genesis-contract.json"
+            )))
+        || binding["economics_sha256"]
+            != hex::encode(Sha256::digest(include_bytes!(
+                "../../../../deploy/acceptance/canonical-sns-economics.json"
+            )))
     {
         return Err("pinned parser byte/source binding mismatch".into());
     }
@@ -226,8 +246,10 @@ fn validate_parser_binding(binding: &Value, adapter: &[u8], binary: &[u8]) -> Re
 }
 
 pub(crate) fn checkpoint_a(root: &Path, dir: &Path) -> Result<Value, String> {
+    super::validate(root)?;
     let context = json_at(dir, "context.json")?;
     validate_context(root, &context)?;
+    super::observations::permanent_baseline(dir, &context)?;
     let io_artifacts = validate_io_artifacts(root, dir)?;
     let expected_accounts = accounts(&context)?;
     if json_at(dir, "accounts.json")? != expected_accounts {
@@ -246,10 +268,13 @@ pub(crate) fn checkpoint_a(root: &Path, dir: &Path) -> Result<Value, String> {
         "frontend",
     ] {
         principal(text(&baseline[role], "subnet_id")?, "baseline subnet")?;
-        if context["root_install"] == true
+        if amount(&baseline[role], "cycles")? < 20_000_000_000_000 {
+            return Err(format!("insufficient pre-install cycles: {role}"));
+        }
+        if ["governance", "root", "ledger", "index", "swap"].contains(&role)
             && baseline[role]["subnet_id"] != baseline["governance"]["subnet_id"]
         {
-            return Err("Governance chunk store and IO install targets must share a subnet".into());
+            return Err("framework canisters must share a compatible subnet".into());
         }
         if baseline[role]["canister_id"] != context[role]
             || baseline[role]["controllers"] != json!([context["operator"]])
@@ -308,15 +333,15 @@ pub(crate) fn checkpoint_a(root: &Path, dir: &Path) -> Result<Value, String> {
     if context["local_fixture"] == false {
         let inputs: Value = read_json(root, &format!("{DIR}/required-inputs.draft.json"))?;
         if inputs["final_sns_framework_id"] != approved_sns_framework() {
-            return Err("deployment sale framework differs from verified reviewed version".into());
+            return Err("deployment framework differs from verified reviewed version".into());
         }
         for component in ["governance", "root", "ledger", "index", "swap", "archive"] {
             if text(
-                &inputs["final_sns_sale_artifacts"],
+                &inputs["final_sns_artifacts"],
                 &format!("{component}_wasm_sha256"),
             )? != manifest.require_hash(&format!("sns_{component}"))?
                 || text(
-                    &inputs["final_sns_sale_artifacts"],
+                    &inputs["final_sns_artifacts"],
                     &format!("{component}_did_sha256"),
                 )? != manifest
                     .value("contract", &format!("{component}_did_sha256"))
@@ -346,6 +371,9 @@ pub(crate) fn checkpoint_a(root: &Path, dir: &Path) -> Result<Value, String> {
             || declared["staking_subaccount_hex"] != hex::encode(&before.account)
             || amount(declared, "cached_stake_e8s")? != u128::from(before.cached_neuron_stake_e8s)
             || amount(declared, "dissolve_delay_seconds")? != u128::from(PERMANENT_DELAY_SECONDS)
+            || amount(declared,"ordinary_maturity_e8s")? != u128::from(before.maturity_e8s_equivalent)
+            || amount(declared,"staked_maturity_e8s")? != u128::from(before.staked_maturity_e8s_equivalent.unwrap_or(0))
+            || declared["hotkeys"] != json!(before.hot_keys.iter().map(Principal::to_text).collect::<Vec<_>>())
             || declared["auto_stake_maturity"] != false
             || declared["dissolve_state"] != "NotDissolving"
             || declared["maturity_disbursement_in_progress"] != false
@@ -358,16 +386,11 @@ pub(crate) fn checkpoint_a(root: &Path, dir: &Path) -> Result<Value, String> {
     }
     let authority = json_at(dir, "authority-plan.json")?;
     let expected = json!({
-        "initial_framework_installer": context["operator"],
-        "initial_io_installer": if context["root_install"] == true {&context["root"]} else {&context["operator"]},
-        "route": if context["root_install"] == true {"root-install-after-sale"} else {"local-deferred-registration-candidate"},
-        "initial_registered_dapps": if context["root_install"] == true {vec![context["frontend"].clone(),context["historian"].clone(),context["nns_manager"].clone(),context["stream"].clone()]} else {vec![]},
-        "io_install_before_controller_handoff": context["root_install"] != true,
-        "registration_caller": if context["root_install"] == true {&context["operator"]} else {&context["governance"]},
-        "registration_method":if context["root_install"] == true {"Root init payload"} else {"Governance/RegisterDappCanisters"},
-        "chunk_store":if context["root_install"] == true {Some(&context["governance"])} else {None},
-        "final_io_controller": context["root"],
-        "deployment_parameters_approved": context["local_fixture"] == false
+        "initial_framework_installer":context["operator"], "initial_io_installer":context["root"],
+        "route":"direct-Normal-genesis-root-install", "initial_registered_dapps":[context["frontend"],context["historian"],context["nns_manager"],context["stream"]],
+        "io_install_before_controller_handoff":false, "registration_caller":context["operator"],
+        "registration_method":"Root init payload", "chunk_store":"each target on its own subnet",
+        "final_io_controller":context["root"],"deployment_parameters_approved":context["local_fixture"] == false
     });
     if authority != expected {
         return Err("installation-authority plan mismatch".into());
@@ -416,7 +439,6 @@ pub(crate) fn checkpoint_a(root: &Path, dir: &Path) -> Result<Value, String> {
             "ledger.bin",
             "index.bin",
             "swap.bin",
-            "required-governance-parameters.bin",
             "parsed-init.json",
             "parsed-economics.json",
             "effective-parameters.txt",
@@ -431,13 +453,14 @@ pub(crate) fn checkpoint_a(root: &Path, dir: &Path) -> Result<Value, String> {
         }
         let requirements = json_at(&outputs, "requirements.json")?;
         if requirements["genesis_automatically_advance_target_version"] != false
-            || requirements["required_automatically_advance_target_version"] != false
+            || requirements["genesis_max_number_of_neurons"] != 1000
+            || requirements["route"] != "direct-Normal-no-sale"
         {
             return Err("generated Governance payload does not freeze SNS-W advancement".into());
         }
         Ok(
             json!({"checkpoint":"A", "local_fixture":context["local_fixture"], "sns_framework_id":approved_sns_framework(), "parser_source_commit":approved_sns_source(), "artifacts":hashes, "io_artifacts":io_artifacts,
-            "post_sale_observations_required":false, "deployment_parameters_approved":context["local_fixture"] == false}),
+            "post_genesis_observations_required":false, "deployment_parameters_approved":context["local_fixture"] == false}),
         )
     })();
     // Only this invocation's temporary verification outputs are removed.
@@ -451,87 +474,10 @@ pub(crate) fn checkpoint_b(root: &Path, dir: &Path) -> Result<Value, String> {
     if b["schema"] != "io.acceptance.observation-b.v1" {
         return Err("B observation schema mismatch".into());
     }
-    super::observations::finalization(dir, &b)?;
-    let inputs: Value = read_json(root, &format!("{DIR}/required-inputs.draft.json"))?;
-    let basket_count = amount(&inputs["sale_plan"], "basket_count")?;
-    let buyers = amount(&b["finalization"]["sweep_icp"], "success")?
-        .checked_add(amount(&b["finalization"]["sweep_icp"], "skipped")?)
-        .filter(|n| *n > 0)
-        .ok_or("no finalized participants")?;
-    let neuron_count = buyers
-        .checked_mul(basket_count)
-        .ok_or("basket count overflow")?;
-    for step in ["sweep_icp", "create_recipes", "sweep_sns", "claim_neurons"] {
-        let result = &b["finalization"][step];
-        if amount(result, "failure")? != 0
-            || amount(result, "invalid")? != 0
-            || amount(result, "global_failures")? != 0
-            || amount(result, "success")?
-                .checked_add(amount(result, "skipped")?)
-                .ok_or("step count overflow")?
-                != if step == "sweep_icp" {
-                    buyers
-                } else {
-                    neuron_count
-                }
-        {
-            return Err(format!("sale finalization {step} incomplete"));
-        }
-    }
-    if b["finalization"]["governance_normal"] != true
-        || b["finalization"]["root_controller_changes_successful"] != true
-        || b["finalization"]["fund_settlement_external_call_required"] != false
-    {
-        return Err("finalization authority/mode results missing".into());
-    }
-    let sale = planned_sale_allocation(&inputs)?.ok_or("sale allocation missing")?;
-    let accepted = amount(&b, "accepted_direct_icp_e8s")?;
-    if amount(&inputs["sale_plan"], "minimum_participant_icp_e8s")?
-        .checked_mul(buyers)
-        .ok_or("participation bound overflow")?
-        > accepted
-    {
-        return Err("finalized participants violate the configured minimum contribution".into());
-    }
-    let participant_stake = amount(&b, "participant_stake_e8s")?;
-    if amount(&b, "operator_stake_e8s")? != GOVERNANCE_IO_E8S {
-        return Err("actual operator stake mismatch".into());
-    }
     let context = json_at(dir, "context.json")?;
-    let participants = json_at(dir, "participant-accounts.json")?;
-    let participants = participants
-        .as_array()
-        .ok_or("participant Accounts missing")?;
-    let mut unique = BTreeSet::new();
-    let mut actual = 0u128;
-    for participant in participants {
-        let sub = text(participant, "subaccount_hex")?;
-        if participant["owner"] != context["governance"]
-            || hex::decode(sub).map_err(|e| e.to_string())?.len() != 32
-            || !unique.insert(sub)
-        {
-            return Err("participant Account identity mismatch".into());
-        }
-        actual = actual
-            .checked_add(amount(participant, "balance_e8s")?)
-            .ok_or("participant balance overflow")?;
-    }
-    if participants.len() as u128 != neuron_count || actual != participant_stake {
-        return Err("participant Ledger balances differ from distributed stake".into());
-    }
-
-    let distribution_fees = amount(&b, "distribution_fees_e8s")?;
-    let residual = amount(&b, "swap_residual_e8s")?;
-    if accepted != sale
-        || amount(&b, "accepted_fund_icp_e8s")? != 0
-        || participant_stake
-            .checked_add(distribution_fees)
-            .and_then(|n| n.checked_add(residual))
-            != Some(sale)
-        || amount(&b, "treasury_icp_e8s")?.checked_add(amount(&b, "icp_sweep_fees_e8s")?)
-            != Some(accepted)
-    {
-        return Err("sale price, distribution or retained treasury conservation mismatch".into());
+    let swap = super::observations::genesis(dir, &context, &b)?;
+    if amount(&b, "operator_stake_e8s")? != GOVERNANCE_IO_E8S {
+        return Err("actual operator genesis stake mismatch".into());
     }
     let supply = amount(&b, "total_supply_e8s")?;
     let reserve = amount(&b, "stream_reserve_e8s")?;
@@ -541,28 +487,26 @@ pub(crate) fn checkpoint_b(root: &Path, dir: &Path) -> Result<Value, String> {
     if reserve_fee != IO_FEE_E8S
         || excluded_jupiter != JUPITER_GOVERNANCE_IO_E8S
         || excluded_reserve != 0
-        || supply
-            .checked_add(distribution_fees)
-            .and_then(|n| n.checked_add(reserve_fee))
-            != Some(TOTAL_IO_E8S)
-        || reserve.checked_add(reserve_fee) != Some(reserve_stake(sale)?)
+        || supply.checked_add(reserve_fee) != Some(TOTAL_IO_E8S)
+        || reserve.checked_add(reserve_fee) != Some(reserve_stake()?)
     {
         return Err("reserve migration, exclusion or total supply conservation mismatch".into());
     }
     let plan = capitalization_plan(supply, reserve, &[excluded_reserve, excluded_jupiter])?;
-    if plan.claims_e8s
-        != GOVERNANCE_IO_E8S
-            .checked_add(participant_stake)
-            .and_then(|n| n.checked_add(residual))
-            .ok_or("claim sum overflow")?
+    if plan.claims_e8s != GOVERNANCE_IO_E8S {
+        return Err("claim supply differs from the sole operator claim-bearing allocation".into());
+    }
+    if amount(&b, "operator_stake_e8s")?
+        .checked_add(amount(&swap["after"], "claim_bearing_io_e8s")?)
+        .is_none_or(|known_claims| known_claims > plan.claims_e8s)
     {
-        return Err("claim supply does not match actual participant/operator holdings".into());
+        return Err("operator and Swap IO balances exceed reconciled claim supply".into());
     }
     Ok(
         json!({"checkpoint":"B", "io_total_supply_e8s":supply, "c0_e8s":plan.claims_e8s, "b0_e8s":plan.claim_backing_e8s,
         "permanent_top_up_e8s":plan.permanent_top_up_e8s,
         "permanent_exact_remainder_thirds":plan.permanent_exact_remainder_thirds,
-        "dynamic_anchor_e8s":DYNAMIC_ANCHOR_E8S, "sale_treasury_retained_icp_e8s": amount(&b,"treasury_icp_e8s")?}),
+        "dynamic_anchor_e8s":DYNAMIC_ANCHOR_E8S,"swap_default_accounts":swap}),
     )
 }
 
@@ -627,7 +571,7 @@ pub(crate) fn checkpoint_c(root: &Path, dir: &Path) -> Result<Value, String> {
     Ok(
         json!({"checkpoint":"C", "constructors":generated.iter().map(|(role,bytes)|
         (*role,hex::encode(Sha256::digest(bytes)))).collect::<BTreeMap<_,_>>(),
-        "monetary_install_authority":if context["root_install"] == true { &context["root"] } else { &context["operator"] }, "local_fixture":context["local_fixture"]}),
+        "monetary_install_authority":context["root"], "local_fixture":context["local_fixture"]}),
     )
 }
 
@@ -656,7 +600,6 @@ fn validate_capitalization(
     if amount(c, "io_total_supply_e8s")? != amount(b, "io_total_supply_e8s")?
         || amount(c, "liquid_backing_e8s")? != amount(b, "b0_e8s")?
         || amount(c, "io_total_supply_e8s")? != amount(c, "io_total_supply_before_funding_e8s")?
-        || amount(c, "sale_treasury_icp_e8s")? != amount(b, "sale_treasury_retained_icp_e8s")?
         // This is the canonical initial funding observation, before bootstrap
         // or reconciliation consumes fees. Only 10 ICP becomes anchor capacity;
         // runtime classifies all additional physical principal as surplus.
@@ -677,11 +620,7 @@ fn validate_capitalization(
     {
         return Err("permanent principal, delay, controller or refresh mismatch".into());
     }
-    let installer = if context["root_install"] == true {
-        &context["root"]
-    } else {
-        &context["operator"]
-    };
+    let installer = &context["root"];
     if c["remaining_install_controllers"]
         != json!({"stream":[installer],"nns_manager":[installer],
         "historian":[installer],"frontend":[installer]})
@@ -733,7 +672,12 @@ fn generated_constructors(
         root,
         &context,
         &json_at(dir, "observation-c.json")?,
-        hex::decode(manifest.require_hash("sns_governance")?).map_err(|e| e.to_string())?,
+        hex::decode(
+            manifest
+                .source_sha256("sns_governance")
+                .ok_or("official Governance module hash missing")?,
+        )
+        .map_err(|e| e.to_string())?,
         &json_at(dir, "io-artifacts.json")?,
     )
 }
@@ -862,13 +806,17 @@ mod tests {
         let binary = b"component binary";
         let binding = json!({"ic_commit":approved_sns_source(),"ic_dirty":false,
             "friendly_parser_sha256":approved_sns_baseline()["parser"]["friendly_parser_sha256"],
-            "adapter_sha256":hex::encode(Sha256::digest(adapter)),"binary_sha256":hex::encode(Sha256::digest(binary))});
+            "adapter_sha256":hex::encode(Sha256::digest(adapter)),"binary_sha256":hex::encode(Sha256::digest(binary)),
+            "genesis_contract_sha256":hex::encode(Sha256::digest(include_bytes!("../../../../deploy/acceptance/genesis-contract.json"))),
+            "economics_sha256":hex::encode(Sha256::digest(include_bytes!("../../../../deploy/acceptance/canonical-sns-economics.json")))});
         validate_parser_binding(&binding, adapter, binary).unwrap();
         for key in [
             "ic_commit",
             "friendly_parser_sha256",
             "adapter_sha256",
             "binary_sha256",
+            "genesis_contract_sha256",
+            "economics_sha256",
         ] {
             let mut bad = binding.clone();
             bad[key] = json!("0".repeat(64));
@@ -914,25 +862,19 @@ mod tests {
         }
         let mut inputs: Value =
             read_json(&source, &format!("{DIR}/required-inputs.draft.json")).unwrap();
-        let operator = Principal::from_slice(&[51; 29]).to_text();
+        let operator =
+            "zkkkd-i34qc-367ln-e2u7o-ezznu-dkfqh-gtfvz-cviph-6qa4v-evtfs-wqe".to_string();
         let jupiter = Principal::from_slice(&[52; 29]).to_text();
         let jupiter_source = Principal::from_slice(&[53; 29]).to_text();
         inputs["genesis_controller_principal"] = json!(operator);
         inputs["acceptance_jupiter_sns_rewards_canister_id"] = json!(jupiter);
         inputs["acceptance_jupiter_source_principal"] = json!(jupiter_source);
-        inputs["sale_plan"]["approved_for_deployment"] = json!(true);
-        for (key, value) in [
-            ("final_token_name", "Component Example"),
-            ("final_token_symbol", "CMPT"),
-            ("proposal_url", "https://forum.dfinity.org/"),
-            ("project_url", "https://example.org/component"),
-            ("sns_logo_path", "component-logo.png"),
-        ] {
-            inputs[key] = json!(value);
-        }
+        inputs["sns_logo_path"] = json!("component-logo.png");
+        inputs["permanent_observation_route"] = json!("public-list-neurons");
+        inputs["permanent_observer"] = json!(Principal::from_slice(&[55; 29]).to_text());
         let manifest: AcceptanceManifest =
             read_json(&source, &format!("{DIR}/acceptance-manifest.json")).unwrap();
-        let mut context = json!({"local_fixture":false,"root_install":true,"operator":operator,"jupiter":jupiter,"jupiter_source":jupiter_source});
+        let mut context = json!({"local_fixture":false,"root_install":true,"operator":operator,"jupiter":jupiter,"jupiter_source":jupiter_source,"permanent_observation_route":inputs["permanent_observation_route"],"permanent_observer":inputs["permanent_observer"]});
         for (name, frozen) in [
             ("governance", "sns_governance"),
             ("root", "sns_root"),
@@ -980,7 +922,7 @@ mod tests {
             fs::write(&input_path, serde_json::to_vec(&bad).unwrap()).unwrap();
             assert!(validate_context(&root, &context).is_err());
         }
-        inputs["sale_plan"]["approved_for_deployment"] = json!(false);
+        inputs["sale_plan"] = json!({"approved_for_deployment":true});
         fs::write(&input_path, serde_json::to_vec(&inputs).unwrap()).unwrap();
         assert!(validate_context(&root, &context).is_err());
         fs::remove_dir_all(root).unwrap();
@@ -992,16 +934,17 @@ mod tests {
     fn capitalization_component_checks_evidence_and_parameters() {
         let operator = Principal::from_slice(&[41; 29]).to_text();
         let manager = Principal::from_slice(&[42; 29]).to_text();
-        let context = json!({"operator":operator,"nns_manager":manager});
-        let b = json!({"io_total_supply_e8s":99_999_999_999_970_000u64,"b0_e8s":3_299_980_000u64,"permanent_top_up_e8s":2_199_986_667u64,"sale_treasury_retained_icp_e8s":299_990_000});
-        let c = json!({"schema":"io.acceptance.observation-c.v1","liquid_backing_e8s":3_299_980_000u64,
-            "io_total_supply_e8s":99_999_999_999_970_000u64,"io_total_supply_before_funding_e8s":99_999_999_999_970_000u64,
-            "sale_treasury_icp_e8s":299_990_000,"dynamic_anchor_seed_e8s":1_000_000_000,
-            "permanent_principal_before_top_up_e8s":100_000_000,"permanent_cached_stake_after_refresh_e8s":2_299_986_667u64,
-            "permanent_ledger_stake_e8s":2_299_986_667u64,"permanent_controller":manager,
+        let root = Principal::from_slice(&[43; 29]).to_text();
+        let context = json!({"operator":operator,"nns_manager":manager,"root":root});
+        let b = json!({"io_total_supply_e8s":99_999_999_999_990_000u64,"b0_e8s":3_000_000_000u64,"permanent_top_up_e8s":2_000_000_000u64});
+        let c = json!({"schema":"io.acceptance.observation-c.v1","liquid_backing_e8s":3_000_000_000u64,
+            "io_total_supply_e8s":99_999_999_999_990_000u64,"io_total_supply_before_funding_e8s":99_999_999_999_990_000u64,
+            "dynamic_anchor_seed_e8s":1_000_000_000,
+            "permanent_principal_before_top_up_e8s":100_000_000,"permanent_cached_stake_after_refresh_e8s":2_100_000_000u64,
+            "permanent_ledger_stake_e8s":2_100_000_000u64,"permanent_controller":manager,
             "permanent_dissolve_delay_seconds":63_115_200,"permanent_auto_stake_maturity":false,
             "refresh_caller":operator,"refresh_succeeded":true,
-            "remaining_install_controllers":{"stream":[operator],"nns_manager":[operator],"historian":[operator],"frontend":[operator]},
+            "remaining_install_controllers":{"stream":[root],"nns_manager":[root],"historian":[root],"frontend":[root]},
             "effective_governance_parameters":{"max_number_of_neurons":1000,"reject_cost_e8s":1_000_000_000,"neuron_minimum_stake_e8s":100_000_000,
                 "transaction_fee_e8s":10_000,"max_dissolve_delay_seconds":1_296_060,"neuron_minimum_dissolve_delay_to_vote_seconds":1_209_599,
                 "max_dissolve_delay_bonus_percentage":0,"max_age_bonus_percentage":0,"max_neuron_age_for_age_bonus":0,
@@ -1019,7 +962,7 @@ mod tests {
             );
         }
         for (pointer,replacement) in [("/permanent_controller",json!(operator)),("/permanent_dissolve_delay_seconds",json!(63_115_199)),
-            ("/permanent_cached_stake_after_refresh_e8s",json!(2_299_986_666u64)),("/refresh_succeeded",json!(false)),
+            ("/permanent_cached_stake_after_refresh_e8s",json!(2_099_999_999u64)),("/refresh_succeeded",json!(false)),
             ("/dynamic_anchor_seed_e8s",json!(0)),("/liquid_backing_e8s",json!(0)),
             ("/effective_governance_parameters/reject_cost_e8s",json!(999_999_999)),
             ("/effective_governance_parameters/voting_rewards_parameters/round_duration_seconds",json!(43_200)),

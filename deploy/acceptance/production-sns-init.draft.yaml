@@ -1,74 +1,294 @@
-# Generated from canonical-sns-economics.json + production-identity-overlay.json.
-name: "TBD_FINAL_TOKEN_NAME"
-description: IO protocol (production) small-sale launch
-NnsProposal:
-  title: IO small-sale production launch
-  url: "TBD_PROPOSAL_URL"
-  summary: IO small-sale governance and protocol production launch.
-logo: "TBD_SNS_LOGO_PATH"
-url: "TBD_PROJECT_URL"
-fallback_controller_principals:
-  - TBD_PRODUCTION_FALLBACK_CONTROLLER_PRINCIPAL
-dapp_canisters:
-  - "torpp-zyaaa-aaaar-qb7xq-cai"
-  - "tjqj3-uaaaa-aaaar-qb7xa-cai"
-  - "oae4c-3iaaa-aaaar-qb5qq-cai"
-  - "thset-pqaaa-aaaar-qb7wa-cai"
-Token:
-  name: "TBD_FINAL_TOKEN_NAME"
-  symbol: "TBD_FINAL_TOKEN_SYMBOL"
-  transaction_fee: 10000 e8s
-  logo: "TBD_SNS_LOGO_PATH"
-Proposals:
-  rejection_fee: 1000000000 e8s
-  initial_voting_period: 86400 seconds
-  maximum_wait_for_quiet_deadline_extension: 43200 seconds
-Neurons:
-  minimum_creation_stake: 100000000 e8s
-Voting:
-  minimum_dissolve_delay: 1209599 seconds
-  MaximumVotingPowerBonuses:
-    DissolveDelay:
-      duration: 1296060 seconds
-      bonus: 0%
-    Age:
-      duration: 0 seconds
-      bonus: 0%
-  RewardRate:
-    initial: 0%
-    final: 0%
-    transition_duration: 0 seconds
-Distribution:
-  Neurons:
-    - principal: TBD_GENESIS_CONTROLLER_PRINCIPAL
-      dissolve_delay: 1296060 seconds
-      memo: 5282519294002868273
-      stake: 3000000000 e8s
-      vesting_period: 0 seconds
-    - principal: alk7f-5aaaa-aaaar-qb4ra-cai
-      dissolve_delay: 1296060 seconds
-      memo: 5282522618206892081
-      stake: 10000000000000000 e8s
-      vesting_period: 0 seconds
-    - principal: TBD_GENESIS_CONTROLLER_PRINCIPAL
-      dissolve_delay: 0 seconds
-      memo: 5282531345630769201
-      stake: 89999996700000000 e8s
-      vesting_period: 0 seconds
-  InitialBalances:
-    treasury: 0 e8s
-    swap: 300000000 e8s
-  total: 100000000000000000 e8s
-Swap:
-  minimum_participants: 1
-  minimum_direct_participation_icp: 300000000 e8s
-  maximum_direct_participation_icp: 300000000 e8s
-  minimum_participant_icp: 300000000 e8s
-  maximum_participant_icp: 300000000 e8s
-  start_time: 12:00 UTC
-  duration: 86400 seconds
-  neurons_fund_participation: false
-  VestingSchedule:
-    events: 2
-    interval: 86400 seconds
-  confirmation_text: IO production sale at a gross reference price of 1 ICP per IO.
+{
+  "dapp_canisters": [
+    "torpp-zyaaa-aaaar-qb7xq-cai",
+    "tjqj3-uaaaa-aaaar-qb7xa-cai",
+    "oae4c-3iaaa-aaaar-qb5qq-cai",
+    "thset-pqaaa-aaaar-qb7wa-cai"
+  ],
+  "description": "IO protocol (production) direct sale-free genesis",
+  "display_name": "IO Protocol",
+  "economics": {
+    "decimals": 8,
+    "developer_voting_power_percent": 100,
+    "final_reward_rate_basis_points": 0,
+    "future_swap_e8s": 0,
+    "governance_neuron": {
+      "claim_bearing": true,
+      "dissolve_delay_seconds": 1296060,
+      "memo": 5282519294002868273,
+      "memo_domain": "IOGOV001",
+      "stake_e8s": 3000000000,
+      "vesting_period_seconds": 0
+    },
+    "initial_redemption_backing": "1 ICP per claim-bearing IO",
+    "initial_reward_rate_basis_points": 0,
+    "initial_voting_period_seconds": 86400,
+    "jupiter_governance_neuron": {
+      "claim_bearing": false,
+      "controller_source": "environment-overlay#jupiter_sns_rewards_canister_id",
+      "dissolve_delay_seconds": 1296060,
+      "io_reward_eligible": false,
+      "memo": 5282522618206892081,
+      "memo_domain": "IOJUP001",
+      "stake_e8s": 10000000000000000,
+      "vesting_period_seconds": 0
+    },
+    "maximum_age_bonus_basis_points": 0,
+    "maximum_dissolve_delay_bonus_basis_points": 0,
+    "maximum_dissolve_delay_seconds": 1296060,
+    "maximum_neuron_age_seconds": 0,
+    "maximum_number_of_neurons": 1000,
+    "minimum_neuron_stake_e8s": 100000000,
+    "minimum_voting_dissolve_delay_seconds": 1209599,
+    "proposal_reject_cost_e8s": 1000000000,
+    "reserve_transport_neuron": {
+      "claim_bearing": false,
+      "dissolve_delay_seconds": 0,
+      "memo": 5282531345630769201,
+      "memo_domain": "IORES001",
+      "stake_e8s": 89999997000000000,
+      "vesting_period_seconds": 0
+    },
+    "reward_event_duration_seconds": 86400,
+    "reward_rate_transition_seconds": 0,
+    "schema": "io.sns.economics.v1",
+    "swap_e8s": 0,
+    "token_name": "IO",
+    "token_symbol": "IO",
+    "total_supply_e8s": 100000000000000000,
+    "transfer_fee_e8s": 10000,
+    "treasury_e8s": 0,
+    "wait_for_quiet_deadline_increase_seconds": 43200
+  },
+  "environment": "production",
+  "framework_version": {
+    "archive_wasm_hash": [
+      247,
+      244,
+      143,
+      64,
+      42,
+      18,
+      140,
+      189,
+      24,
+      220,
+      119,
+      52,
+      199,
+      241,
+      73,
+      242,
+      129,
+      76,
+      129,
+      129,
+      118,
+      111,
+      57,
+      137,
+      122,
+      102,
+      213,
+      20,
+      212,
+      124,
+      207,
+      17
+    ],
+    "governance_wasm_hash": [
+      36,
+      239,
+      32,
+      4,
+      36,
+      13,
+      42,
+      52,
+      188,
+      218,
+      166,
+      22,
+      19,
+      77,
+      39,
+      188,
+      24,
+      209,
+      28,
+      30,
+      150,
+      179,
+      120,
+      164,
+      109,
+      86,
+      79,
+      238,
+      220,
+      193,
+      168,
+      195
+    ],
+    "index_wasm_hash": [
+      218,
+      182,
+      128,
+      141,
+      13,
+      252,
+      6,
+      229,
+      232,
+      131,
+      54,
+      208,
+      195,
+      211,
+      228,
+      94,
+      84,
+      72,
+      198,
+      227,
+      108,
+      42,
+      120,
+      31,
+      62,
+      158,
+      9,
+      189,
+      69,
+      15,
+      82,
+      140
+    ],
+    "ledger_wasm_hash": [
+      53,
+      77,
+      214,
+      236,
+      253,
+      199,
+      43,
+      84,
+      9,
+      128,
+      91,
+      49,
+      222,
+      162,
+      44,
+      157,
+      177,
+      29,
+      246,
+      225,
+      64,
+      149,
+      165,
+      166,
+      137,
+      36,
+      235,
+      99,
+      83,
+      94,
+      109,
+      138
+    ],
+    "root_wasm_hash": [
+      55,
+      98,
+      221,
+      111,
+      19,
+      72,
+      131,
+      10,
+      29,
+      107,
+      25,
+      37,
+      44,
+      162,
+      31,
+      81,
+      140,
+      159,
+      157,
+      58,
+      43,
+      121,
+      177,
+      221,
+      153,
+      215,
+      92,
+      13,
+      230,
+      212,
+      110,
+      244
+    ],
+    "swap_wasm_hash": [
+      243,
+      201,
+      205,
+      42,
+      80,
+      63,
+      49,
+      54,
+      201,
+      31,
+      29,
+      68,
+      197,
+      180,
+      186,
+      194,
+      213,
+      241,
+      90,
+      125,
+      52,
+      119,
+      49,
+      170,
+      255,
+      3,
+      229,
+      250,
+      128,
+      223,
+      140,
+      72
+    ]
+  },
+  "jupiter": "alk7f-5aaaa-aaaar-qb4ra-cai",
+  "logo_path": "deploy/acceptance/logo.png",
+  "operator": "zkkkd-i34qc-367ln-e2u7o-ezznu-dkfqh-gtfvz-cviph-6qa4v-evtfs-wqe",
+  "parked_swap": {
+    "max_direct_participation_icp_e8s": 100000000,
+    "max_participant_icp_e8s": 100000000,
+    "min_direct_participation_icp_e8s": 100000000,
+    "min_participant_icp_e8s": 100000000,
+    "min_participants": 1,
+    "neuron_basket_construction_parameters": {
+      "count": 2,
+      "dissolve_delay_interval_seconds": 86400
+    },
+    "neurons_fund_participation": false,
+    "nns_proposal_id": 0,
+    "should_auto_finalize": false,
+    "sns_token_e8s": 0,
+    "swap_due_timestamp_seconds": 18446744073709551615,
+    "swap_start_timestamp_seconds": 18446744073709551615
+  },
+  "project_url": "https://ghrkr-eyaaa-aaaas-amxvq-cai.icp0.io/",
+  "schema": "io.acceptance.direct-sns-genesis.v1",
+  "token_name": "IO",
+  "token_symbol": "IO"
+}

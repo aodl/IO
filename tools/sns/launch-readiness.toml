@@ -11,7 +11,7 @@ evidence = "TODO: external audit/security review."
 
 [sns_config_validated]
 status = "incomplete"
-evidence = "tools/sns/sns_init.io.template.yaml exists and the maintained source-built SNS flow validates and consumes the local init. The absent optional dfx sns extension remains an upstream non-blocking tooling defect for this evidence path; final production SNS configuration review is incomplete."
+evidence = "The active acceptance contract is deploy/acceptance/genesis-contract.json: typed direct Normal initialization, installed parked Swap and IO/IO metadata. Exact A/B/C installation, live-neuron evidence and actual Jupiter inputs remain required. The source-built SNS templates are compatibility fixtures, not an alternate launch configuration. The absent optional dfx sns extension is an upstream non-blocking tooling defect for historical compatibility workflows; typed direct initialization does not require it."
 
 [local_sns_testing_rehearsal]
 status = "incomplete"
@@ -34,16 +34,16 @@ status = "incomplete"
 evidence = "TODO: production dapp canister IDs and stable operating period."
 
 [nns_root_co_controller_step_planned]
-status = "incomplete"
-evidence = "TODO: official add-NNS-root/controller handoff plan."
+status = "complete"
+evidence = "The accepted direct-genesis route has no NNS Root co-controller step. Governance controls SNS Root; SNS Root solely controls Governance, Ledger, Index, Swap and the four IO dapps. Exact live controller observations remain an installation gate; no controller change is authorized by this checklist."
 
 [fallback_controllers_defined]
-status = "incomplete"
-evidence = "TODO: final fallback controller principals."
+status = "complete"
+evidence = "The accepted direct-genesis graph retains no operator fallback. The frozen operator is the sole initial installer and appears in Swap constructor compatibility data only; that list grants no installed-canister controller right while Swap remains Adopted. Actual handoff observations and future Swap successor review remain mandatory."
 
 [dapp_canisters_listed]
 status = "incomplete"
-evidence = "Template lists io_stream_manager, io_nns_neuron_manager, io_historian, and frontend; final IDs are placeholders."
+evidence = "The frozen nine-role acceptance allowlist names Stream, NNS Manager, Historian and Frontend. Exact live Root registration/controller evidence remains required; future production SNS identity is separate from compatibility-template placeholders."
 
 [sns_controlled_dapp_upgrade_path_proved]
 status = "complete"
@@ -51,7 +51,7 @@ evidence = "The historical one-component candidate-Governance/official-Root unit
 
 [official_reward_share_release]
 status = "complete"
-evidence = "Executed NNS proposal 144202 published SNS Governance revision 98c898f8de068a1fc0e97ebc805f9fa7f315d862 with latest_reward_event_participation. The reviewed official lock selects the coherent SNS-W version after that proposal and binds all six publication proposals, source revisions, compressed/raw Wasm hashes and embedded DID hashes. Required official contract/io/upgrade/lifecycle and real-acceptance execution are separate evidence gates, and final deployment-source approval remains incomplete."
+evidence = "Executed NNS proposal 144202 published SNS Governance revision 98c898f8de068a1fc0e97ebc805f9fa7f315d862 with latest_reward_event_participation. This is the official reviewed SNS Governance release containing the capability. The reviewed official lock selects the coherent SNS-W version after that proposal and binds all six publication proposals, source revisions, compressed/raw Wasm hashes and embedded DID hashes. Required official contract/io/upgrade/lifecycle and real-acceptance execution are separate evidence gates, The reviewed framework source is accepted; byte-for-byte installation, current-source IO artifacts and genuine lifecycle evidence remain separate mandatory gates."
 
 [frontend_sns_integration_tested]
 status = "incomplete"

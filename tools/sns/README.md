@@ -2,6 +2,13 @@
 
 This directory contains the official SNS compatibility package for IO. It is separate from the IO-owned mock/PocketIC SNS-shaped harness. The package is not production launch configuration and must not depend on `dfx` in required CI, must not use `--network ic`, and must not call mainnet.
 
+The active acceptance launch is the single typed sale-free path under
+[`deploy/acceptance/`](../../deploy/acceptance/README.md). The templates and SNS-W
+sale lifecycle below are compatibility/rehearsal fixtures and historical evidence;
+they are not a fallback launch architecture or acceptance authority. The official
+framework source is accepted, while exact installation and current-source IO
+lifecycle evidence remain mandatory.
+
 ## Four Layers
 
 Layer 1: Local fixture IO mock/PocketIC SNS-shaped harness.

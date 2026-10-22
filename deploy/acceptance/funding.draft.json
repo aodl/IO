@@ -69,5 +69,12 @@
       "replenishable": true,
       "economic_classification": "redemption quote charges its payout fee"
     }
-  ]
+  ],
+  "canonical_no_sale_example": {
+    "c0_e8s": 3000000000,
+    "b0_e8s": 3000000000,
+    "permanent_increment_e8s": 2000000000,
+    "independent_dynamic_anchor_e8s": 1000000000,
+    "authority": "derived from actual B Ledger observations; these example values cannot override observations"
+  }
 }

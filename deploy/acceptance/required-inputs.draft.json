@@ -1,33 +1,10 @@
 {
   "schema": "io.acceptance.required-inputs.v1",
-  "final_token_name": "TBD_FINAL_TOKEN_NAME",
-  "final_token_symbol": "TBD_FINAL_TOKEN_SYMBOL",
-  "final_sns_framework_id": "TBD_FINAL_SNS_FRAMEWORK_ID",
-  "final_sns_sale_artifacts": {
-    "governance_wasm_sha256": "TBD_FINAL_SALE_GOVERNANCE_WASM_HASH",
-    "governance_did_sha256": "TBD_FINAL_SALE_GOVERNANCE_DID_HASH",
-    "root_wasm_sha256": "TBD_FINAL_SALE_ROOT_WASM_HASH",
-    "root_did_sha256": "TBD_FINAL_SALE_ROOT_DID_HASH",
-    "ledger_wasm_sha256": "TBD_FINAL_SALE_LEDGER_WASM_HASH",
-    "ledger_did_sha256": "TBD_FINAL_SALE_LEDGER_DID_HASH",
-    "index_wasm_sha256": "TBD_FINAL_SALE_INDEX_WASM_HASH",
-    "index_did_sha256": "TBD_FINAL_SALE_INDEX_DID_HASH",
-    "swap_wasm_sha256": "TBD_FINAL_SALE_SWAP_WASM_HASH",
-    "swap_did_sha256": "TBD_FINAL_SALE_SWAP_DID_HASH",
-    "archive_wasm_sha256": "TBD_FINAL_SALE_ARCHIVE_WASM_HASH",
-    "archive_did_sha256": "TBD_FINAL_SALE_ARCHIVE_DID_HASH"
-  },
-  "sale_plan": {
-    "approved_for_deployment": false,
-    "initial_swap_io_allocation_e8s": 300000000,
-    "minimum_participant_icp_e8s": 300000000,
-    "start_time": "12:00 UTC",
-    "duration_seconds": 86400,
-    "basket_count": 2,
-    "basket_interval_seconds": 86400
-  },
-  "genesis_controller_principal": "TBD_GENESIS_CONTROLLER_PRINCIPAL",
-  "sns_logo_path": "TBD_SNS_LOGO_PATH",
+  "final_token_name": "IO",
+  "final_token_symbol": "IO",
+  "final_sns_framework_id": "io-official-sns-w-version-after-144202-2026-10-05",
+  "genesis_controller_principal": "zkkkd-i34qc-367ln-e2u7o-ezznu-dkfqh-gtfvz-cviph-6qa4v-evtfs-wqe",
+  "sns_logo_path": "deploy/acceptance/logo.png",
   "acceptance_jupiter_sns_rewards_canister_id": "TBD_ACCEPTANCE_JUPITER_SNS_REWARDS_CANISTER_ID",
   "acceptance_jupiter_source_principal": "TBD_ACCEPTANCE_JUPITER_PRINCIPAL",
   "jupiter_activation_block_floor": "TBD_ACCEPTANCE_JUPITER_ACTIVATION_BLOCK_FLOOR",
@@ -42,15 +19,31 @@
     "dissolve_delay_seconds": "TBD_ACCEPTANCE_PERMANENT_DISSOLVE_DELAY",
     "auto_stake_maturity": "TBD_ACCEPTANCE_PERMANENT_AUTO_STAKE_MATURITY",
     "follow_policy": "TBD_ACCEPTANCE_PERMANENT_FOLLOW_POLICY",
-    "maturity_disbursement_in_progress": "TBD_ACCEPTANCE_PERMANENT_PENDING_DISBURSEMENT"
+    "maturity_disbursement_in_progress": "TBD_ACCEPTANCE_PERMANENT_PENDING_DISBURSEMENT",
+    "hotkeys": "TBD_VERIFIED_EXISTING_HOTKEYS"
   },
   "audited_permanent_principal_after_top_up_e8s": "TBD_AUDITED_PERMANENT_PRINCIPAL_AFTER_TOP_UP_E8S",
   "current_source_io_artifacts": {
-    "stream_wasm_sha256": "TBD_CURRENT_SOURCE_IO_STREAM_WASM_HASH",
-    "nns_manager_wasm_sha256": "TBD_CURRENT_SOURCE_IO_NNS_MANAGER_WASM_HASH",
-    "historian_wasm_sha256": "TBD_CURRENT_SOURCE_IO_HISTORIAN_WASM_HASH",
-    "frontend_wasm_sha256": "TBD_CURRENT_SOURCE_IO_FRONTEND_WASM_HASH"
+    "stream_wasm_sha256": "37e708eac77f5b1c242d0b0c2d35ebb159d65af61b2cd49fa1d9ece3b41e8a68",
+    "nns_manager_wasm_sha256": "ad3c3f5f4a99be1b4e14b339e8618614330702b1fdf3afe8600100edb963c8b5",
+    "historian_wasm_sha256": "cadc0a1c8ff0895bf0ac46f8c8d0c0beb7935acaf0c65568cb9f58e6f57d4d86",
+    "frontend_wasm_sha256": "b1e64b3c37db290db2d73d5b53dd926a6bd510ce755e43acf772b4d474697fdd"
   },
-  "proposal_url": "TBD_PROPOSAL_URL",
-  "project_url": "TBD_PROJECT_URL"
+  "project_url": "https://ghrkr-eyaaa-aaaas-amxvq-cai.icp0.io/",
+  "final_sns_artifacts": {
+    "governance_wasm_sha256": "e2fd07bffa7d71241c3b47e2c8398ef78bfc26b95427a3711a9e579ad5f9f190",
+    "governance_did_sha256": "0d3a00e821c8959991cfb90f4366d101fce340e78f3fb76b0de4ed28c1c08c38",
+    "root_wasm_sha256": "356960e58691a7438cb07c73806cf8d0948247508f0efc281cb2ccb7a382f836",
+    "root_did_sha256": "9867bfe913aa17d42d891c22187273e643eedb3ec8e4b3af4b894e74945d5806",
+    "ledger_wasm_sha256": "a273d741019b4324b22e2e64cfb0239de148ae9693e8801102a04118dfd383c0",
+    "ledger_did_sha256": "02a42599e3d2036a19dcfa53db04ad5a5271b0bd78ac1a5986b3dd361f33a99c",
+    "index_wasm_sha256": "0768d43e0ca776c80515eb917839cbee0adca38ef69fb28280407c28fe4ea979",
+    "index_did_sha256": "701a43426ae7ba89cb3f348b9925f946e710fb4b2d3c338a2413c18d7112d95d",
+    "swap_wasm_sha256": "3d17f42df29a764fa3d813923646f85aac9f61320d97b2b07c1045ffb342d638",
+    "swap_did_sha256": "2f0c524b3f4dd84a63ef0cbe8df37042ad662f7befc9612afe9b9e15ce900f56",
+    "archive_wasm_sha256": "ff0ba15ca5f807ee4dc77efefc58cb5e3dafee493f67b278b4e5f0b0323dfb3e",
+    "archive_did_sha256": "3c59e0283151a91d964df6cf3cb0916a49f376bb19182fb905177f0e64810f3b"
+  },
+  "permanent_observation_route": "TBD_PUBLIC_LIST_OR_EXISTING_AUTHORIZED_FULL_NEURON",
+  "permanent_observer": "TBD_UNRELATED_PUBLIC_OBSERVER_OR_EXISTING_AUTHORIZED_CALLER"
 }

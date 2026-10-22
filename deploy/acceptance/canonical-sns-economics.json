@@ -38,7 +38,7 @@
     "controller_source": "environment-overlay#jupiter_sns_rewards_canister_id"
   },
   "reserve_transport_neuron": {
-    "stake_e8s": "TOTAL_SUPPLY_E8S - GOVERNANCE_STAKE_E8S - JUPITER_GOVERNANCE_STAKE_E8S - SALE_IO_ALLOCATION_E8S",
+    "stake_e8s": 89999997000000000,
     "memo": 5282531345630769201,
     "memo_domain": "IORES001",
     "dissolve_delay_seconds": 0,
@@ -47,10 +47,7 @@
   },
   "treasury_e8s": 0,
   "future_swap_e8s": 0,
-  "gross_sale_reference_price": "1 ICP per IO",
-  "sale_allocation_source": "required-inputs.draft.json#sale_plan.initial_swap_io_allocation_e8s",
-  "sale_price_constraint": "accepted_direct_participation_icp_e8s == initial_swap_io_allocation_e8s",
-  "minimum_participants": 1,
-  "neurons_fund_participation": false,
-  "developer_voting_power_percent": 100
+  "developer_voting_power_percent": 100,
+  "swap_e8s": 0,
+  "initial_redemption_backing": "1 ICP per claim-bearing IO"
 }
