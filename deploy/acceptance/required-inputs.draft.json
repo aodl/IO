@@ -5,7 +5,7 @@
   "final_sns_framework_id": "io-official-sns-w-version-after-144202-2026-10-05",
   "genesis_controller_principal": "zkkkd-i34qc-367ln-e2u7o-ezznu-dkfqh-gtfvz-cviph-6qa4v-evtfs-wqe",
   "sns_logo_path": "deploy/acceptance/logo.png",
-  "acceptance_jupiter_sns_rewards_canister_id": "TBD_ACCEPTANCE_JUPITER_SNS_REWARDS_CANISTER_ID",
+  "governance_voting_principal": "zkkkd-i34qc-367ln-e2u7o-ezznu-dkfqh-gtfvz-cviph-6qa4v-evtfs-wqe",
   "acceptance_jupiter_source_principal": "TBD_ACCEPTANCE_JUPITER_PRINCIPAL",
   "jupiter_activation_block_floor": "TBD_ACCEPTANCE_JUPITER_ACTIVATION_BLOCK_FLOOR",
   "permanent_neuron_observation": {

@@ -1,8 +1,9 @@
 # Sale-free acceptance: governance and operational handoff
 
-Review date: 2026-10-22. **Development validated; acceptance blocked.**
-This review authorizes no network observation, installation, funding, identity
-operation or controller change. It introduces no voting implementation.
+Review date: 2026-10-22. **Individual-controlled acceptance authorized as a product policy; revised implementation validation pending.**
+This document authorizes no network observation, installation, funding, identity
+operation or controller change. The individual-control decision supersedes the
+former acceptance dependency on Jupiter DAO governance.
 
 ## Source and evidence boundary
 
@@ -11,11 +12,12 @@ operation or controller change. It introduces no voting implementation.
 | IO | `76de77b8d997609623f3e84f8dc3a3be4991470b` | `21a9f27be1d9b91a4d4e31354a2600f34e46e4b9` | Clean master; documentation review on `feat/acceptance-readiness-authority-review` |
 | Jupiter | `1c86d9b32c774a470489b4e4a5cfe4ddfaae7341` | `ebbe3a3d5fd669910600547431e758a6ff578fd4` | Clean master; read only; no branch or worktree mutation |
 
-Both origin URLs and GitHub master commit/tree identities were checked. IO's
-executable source is unchanged from `043cde2d54573371f0388175963ab9fe141a8aec`
+Both origin URLs and GitHub master commit/tree identities were checked. The retained prior validation concerns IO executable source at `043cde2d54573371f0388175963ab9fe141a8aec`
 (tree `eba7cf4123a59c0562433e4f42a462965af1bb58`); the intervening status update
-is documentation only. These identities describe reviewed inputs, not a new
-release/artifact-recording pair.
+is documentation only. The individual-governance working patch is based on
+`919a12c8a05ddc716ccc4b7a41379c524c2cd2dd` on
+`feat/acceptance-individual-governance`; its evidence is recorded separately in
+implementation-status.md. These identities do not form a new release pair.
 
 The retained validation directory is
 `/home/codexdev/.codex-io/sns-framework/sale-free-resource-aware-validation-20261022T065759Z`.
@@ -25,149 +27,75 @@ This review's source hashes, GitHub results, test commands and logs are outside
 the repository at
 `/home/codexdev/.codex-io/sns-framework/acceptance-readiness-20261022`.
 
-## A. Authority gate: no approved Jupiter decision source
+## A. Acceptance authority and production separation
 
-The reviewed Jupiter repository supplies no canonical jUP Governance principal,
-deployment evidence, decision interface or approved alternative decentralized
-decision process for IO voting. Its [SNS Rewards README](https://github.com/aodl/JUPITER_FAUCET_SUITE/blob/1c86d9b32c774a470489b4e4a5cfe4ddfaae7341/canisters/sns-rewards/README.md)
-describes jUP Root as a future replacement for development owner indexing.
-This is a source-backed missing prerequisite, not proof that no such deployment
-exists anywhere. No live deployment was queried.
+The accepted initial acceptance policy is one individual exercising decisive SNS
+governance through two distinct neurons. The sole authoritative voter field is
+`governance_voting_principal`, equal to operator
+`zkkkd-i34qc-367ln-e2u7o-ezznu-dkfqh-gtfvz-cviph-6qa4v-evtfs-wqe`.
+This is genuine standard Governance/Root operation under centralized authority,
+not evidence of decentralized Jupiter decisions.
 
-| Authority or identity | Evidence / required relationship | Status |
-| --- | --- | --- |
-| Deciders of Jupiter's IO vote | Approved decentralized Jupiter governance and its decision rules | Unresolved product/governance prerequisite |
-| Binding source decision | Canonical source principal, proposal ID, typed action and irreversible decision state | No approved source or record format supplied |
-| Production SNS Rewards | `alk7f-5aaaa-aaaar-qb4ra-cai` | Documented live owner-index service; not the acceptance voter |
-| Acceptance SNS Rewards | Independent reviewed canister identity, actual module and controller evidence | Unresolved; never substitute production |
-| Jupiter ICP inflow source | Separate authenticated monetary source principal | Unresolved; grants no voting authority |
-| Owner-index Root | OpenChat `3e3x2-xyaaa-aaaaq-aaalq-cai`, resolving Governance/Ledger for owner attribution | Not an IO vote authority; must not be repurposed |
-| IO Governance | `h7y7s-kyaaa-aaaas-amxrq-cai` | Frozen acceptance target; live state unobserved |
-| IO Jupiter neuron | `IOJUP001`, 100M IO, 100% multiplier, sole acceptance SNS Rewards principal, exactly `{Vote}` | Genesis and authorization locally proved; real mirror absent |
-| IO operator neuron | 30 IO; may propose; cannot vote for Jupiter or grant itself Jupiter permissions | Locally proved using a caller mock |
-| Upgrader of Jupiter SNS Rewards | Existing actual controller graph; future intended jUP DAO handoff | Deployment docs allow bootstrap control before DAO handoff; live authority unverified |
-
-Intended authority chain, with unresolved links shown explicitly:
+| Identity / authority | Acceptance requirement |
+| --- | --- |
+| Human operator | Propose using 30 IO IOGOV001, then separately vote using IOJUP001; live authentication must be independently verified |
+| IOJUP001 | 100M IO, 100% multiplier, sole operator principal, exactly Vote, no genesis/checkpoint followees; no monetary entitlement |
+| IOGOV001 | 30 IO, full reviewed operator permissions, independent claim-bearing staking Account |
+| IORES001 | 899,999,970 IO, existing reserve-migration authority |
+| Jupiter ICP source | Separate unresolved principal, distinct from voter and all nine canister roles; confers no voting authority |
+| Production SNS Rewards | `alk7f-5aaaa-aaaar-qb4ra-cai`, production overlay only; never substituted for the acceptance voter |
+| IO Governance | Frozen `h7y7s-kyaaa-aaaas-amxrq-cai`; live state unobserved |
 
 ```text
-approved Jupiter decentralized decision source [UNRESOLVED]
-  -> canonical finalized, action-bound decision [UNRESOLVED]
-  -> acceptance Jupiter SNS Rewards [ID / implementation / control UNRESOLVED]
-  -> RegisterVote as that canister on IOJUP001
+reviewed human operator (live authentication UNVERIFIED)
+  -> MakeProposal via IOGOV001 (30 IO; insufficient alone)
+  -> separate RegisterVote via IOJUP001 (100M IO; Vote only)
   -> IO SNS Governance -> SNS Root -> four IO dapps
 ```
 
-IO's locally proved final controller graph is separate from neuron permissions:
 Governance solely controls Root; Root solely controls Governance, Ledger, Index,
-Swap, Stream, NNS Manager, Historian and Frontend. NNS Manager is the intended
-controller of the permanent and Dynamic NNS positions. The operator retains no
-fallback controller
-in the accepted final graph. Jupiter SNS Rewards is external to the four IO
-dapps. An individual who can replace Jupiter SNS Rewards could replace its vote
-logic: its authentic decentralized upgrade authority must therefore be part of
-the governance contract, not merely a Wasm hash check.
+Swap and the four IO dapps. The operator has no final controller fallback.
+NNS Manager controls the intended permanent and Dynamic NNS positions.
+The exact IOJUP001 staking Account is excluded; other Accounts authorized by
+that human are not automatically excluded. Standard Vote also permits following
+changes, so no-followees is an observed launch invariant, not an immutable
+restriction. It does not permit ordinary permission reassignment: retaining and
+decentralizing this same acceptance SNS requires a separate handover decision
+before live genesis. No elevated permission is added for that purpose.
 
-### Minimum proposal-binding review contract
+IO ordinary proposals retain an 86,400-second initial period and 43,200-second
+WFQ parameter. Critical actions have source-defined minimums (432,000 and
+216,000 seconds respectively). Read each canonical proposal's actual deadline;
+WFQ is not guaranteed additional time. Human acceptance has no cross-DAO
+finality dependency and no guarantee against human or network delay.
 
-This is a requirement for a future approved implementation, not a new schema
-or an implemented authorization policy. Bind the canonical source governance
-principal, decision/proposal ID and final result to the acceptance context,
-exact IO Governance principal, IO proposal ID, neuron, action variant and all
-execution parameters. For installation bind target, install mode, raw module
-hash, constructor bytes/hash and chunked-Wasm descriptor; for generic actions
-bind function ID, registered target/method and exact payload hash. Include a
-single-use authorization identity and expiry before the actual target deadline.
-A title, summary, owner snapshot or caller-supplied Boolean is insufficient.
+The reviewed Jupiter source `1c86d9b32c774a470489b4e4a5cfe4ddfaae7341`
+still supplies no approved canonical jUP decision source or IO mirror.
+Its owner-index Root/OpenChat discovery is not voting authority. Authentic
+source decisions, exact action/hash/instance/replay binding, decentralized
+upgrade authority, durable vote reconciliation and a feasible deadline contract
+remain **production-decentralization requirements**. No Jupiter code, Candid,
+stable field or deployment is changed. A post-submission one-day DAO decision
+plus observation/vote latency cannot be presumed to fit an unextended one-day
+IO proposal. No production authority or timetable is approved here.
 
-Pinned Governance `get_proposal` summarizes blobs larger than 64 bytes with
-their length and SHA-256; `list_proposals` clears some payloads. A future mirror
-must verify the source-defined canonical representation, including the
-constructor and chunked module hash, rather than hash a redacted response as if
-it were the original payload. See upstream [types.rs](https://github.com/dfinity/ic/blob/98c898f8de068a1fc0e97ebc805f9fa7f315d862/rs/sns/governance/src/types.rs#L1783)
-and [Governance get_proposal](https://github.com/dfinity/ic/blob/98c898f8de068a1fc0e97ebc805f9fa7f315d862/rs/sns/governance/src/governance.rs#L1778).
-Exact successful or already-cast vote evidence must be reconciled through valid
-Governance observations; a caller-filtered ballot list is not authentication.
-Missing, rejected, stale, ambiguous or unfinalized decisions never imply Yes.
+## B–C. Individual-controlled implementation and local proof
 
-### Deadline feasibility
+The acceptance adapter, existing renderers/checkpoints and real SNS fixture use
+the same human principal for both permission records. Actual canister roles and
+the independent ICP source remain collision-checked. Production retains its
+separate pinned SNS Rewards voter. Canonical memo domains derive different
+staking subaccounts even with identical permission principals.
 
-Pinned official Governance is `98c898f8de068a1fc0e97ebc805f9fa7f315d862`.
-[topics.rs](https://github.com/dfinity/ic/blob/98c898f8de068a1fc0e97ebc805f9fa7f315d862/rs/sns/governance/src/topics.rs#L63)
-classifies actions; `Action::voting_duration_parameters` applies critical
-minimums. The accepted typed initializer sets no custom criticality override.
-Each proposal freezes its own initial period and wait-for-quiet
-parameters at creation; later parameter changes are not a substitute for
-reading the actual proposal.
-
-No live proposal was queried and no new cross-DAO decision record was obtained.
-The table derives windows from the accepted initializer and pinned implementation;
-it is not a measured mirror round trip. A future integration proof must retain
-each canonical `get_proposal` creation time, action, topic, frozen periods,
-current WFQ deadline and final decision alongside the source decision record.
-
-| Acceptance action class | Initial period | WFQ parameter | Deadline without extension |
-| --- | ---: | ---: | --- |
-| Four initial IO installations (`UpgradeSnsControlledCanister`, Install mode), dapp registration/settings | 86,400 s | 43,200 s | creation + 86,400 s |
-| Framework upgrade / advance target | 86,400 s | 43,200 s | creation + 86,400 s |
-| Motion and normal-topic custom execution | 86,400 s | 43,200 s | creation + 86,400 s |
-| Governance/ledger parameters, metadata, treasury/mint; generic-function registration/removal, topic changes, deregistration and other critical operations | 432,000 s minimum | 216,000 s minimum | creation + 432,000 s with accepted parameters |
-
-Use `wait_for_quiet_state.current_deadline_timestamp_seconds`, falling back to
-creation + the proposal's own initial period only when that state is absent.
-WFQ extends only on qualifying tally changes, up to initial + twice its
-parameter (nominal maxima 172,800 / 864,000 seconds); it provides no guaranteed
-extra time. `ProposalData::accepts_vote` uses strictly before the deadline;
-`register_vote` rejects strictly after it. Do not design around this exact-second
-boundary or an already-decided proposal's reward-only voting window.
-See [proposal.rs](https://github.com/dfinity/ic/blob/98c898f8de068a1fc0e97ebc805f9fa7f315d862/rs/sns/governance/src/proposal.rs#L2134)
-and [register_vote](https://github.com/dfinity/ic/blob/98c898f8de068a1fc0e97ebc805f9fa7f315d862/rs/sns/governance/src/governance.rs#L3870).
-
-For creation time `t0`, discovery delay `d`, source decision time `j`, observation
-and verification `v`, submission/recovery `s`, the required condition is
-`d + j + v + s < target_deadline - t0`, with a reviewed safety margin. Earliest
-discovery could be immediate in a future implementation; no discovery mechanism
-exists in SNS Rewards. Latest and worst-case completion are not bounded by the
-reviewed Jupiter source. Its daily owner scan calls only `list_neurons`, uses
-100-neuron pages, 60-second start/busy retries and 300-second page-failure retries;
-none observes proposals or records final decisions. A bounded individual call
-timeout does not bound total retries, outage or upgrade interruption.
-
-If the future decision source uses this standard SNS implementation, its
-minimum ordinary period is one day (default four days), and early irreversible
-majority decisions are possible but not guaranteed. Even the minimum unextended
-one-day finality path, started after IO discovery, plus positive observation
-and vote latency cannot reliably fit IO's one-day installation window. Waiting
-for source WFQ can take longer. Critical IO windows may offer more nominal room,
-but source parameters and availability assumptions remain unknown. There is
-therefore **no demonstrated post-submission mirror deadline contract** for the
-required initial installations.
-
-Product approval must first select the authentic Jupiter authority, its
-upgrade/control chain, exact finality rule and timing contract. Choices for
-separate review include waiting for that governance system, binding a genuine
-prior decision to an exact future IO action, or reviewing IO voting periods.
-None is selected or implemented here. An unrelated DAO, automatic approval,
-operator discretion and mock votes are not alternatives to that authority.
-
-## B–C. Implementation and real integration
-
-**Blocked at the authority/timing gate; zero new voting tests executed.**
-No Jupiter file, Candid method, stable field, migration or timer was changed.
-`sns-rewards/src/state.rs` preserves its `VersionedStableState::V1` metadata
-(memory 0) and owner maps A/B (memories 1/2). The two production queries remain
-`get_relay_reward_context` and `resolve_default_icp_accounts`. Root changes
-invalidate both maps; unchanged-Root upgrades restore snapshots/cursors and
-restart scanning. Existing four ignored PocketIC owner-index tests use mocked
-Root/Governance/Ledger responses; they are not canonical governance evidence.
-No new stable compatibility claim or new Jupiter validation result is made.
-
-The retained IO A/B/C proof uses `mock_nns_candidate_actor` to call Governance
-as a canister. It proves Vote authorization, operator non-adoption, Root's four
-installs, and unchanged economics. It does not prove real Jupiter decisions,
-proposal mapping, deadline service, replay recovery or live deployment.
-Positive/negative/upgrade voting scenarios in the requested next-stage contract
-remain mandatory after authority/timing approval; implementing a mock decision
-source would not close them.
+Fresh tests must establish proposer-only non-adoption, the separate decisive
+standard RegisterVote, rejection-cost charging/release/retention, Root installs
+with physical module/controller observations, exact Vote-only permissions,
+unrelated-caller rejection and denial of all non-voting authority. Full A/B/C
+must retain 30 IO claims, 30 ICP backing, +20 ICP permanent capital, independent
+10 ICP anchor, timer-only progression and exact 100M monetary exclusion.
+Retained mock-canister votes prove only their recorded source's authorization;
+they are not the new individual-controlled test result. See implementation-status.md
+for executed results and source identities.
 
 ## D. Lifecycle coverage and disposition for review
 
@@ -175,23 +103,22 @@ source would not close them.
 | --- | --- | --- |
 | Six official components, direct Normal genesis, exact IO/IO, parked Swap, controller graph | Retained typed A/B/C launch and component/module observations | Live installation observations remain required |
 | 1B distribution, reserve disbursement, C0=30 IO, B0=30 ICP, permanent +20 ICP, independent 10 ICP anchor | A/B/C and negative cases; exact Ledger/NNS records | Repeat with real identities and separately authorized funding |
-| Root installs all four current IO Wasms via target-local chunks | Four physical module hashes and proposal IDs in `root-install-proposals.json` | Real Jupiter authorization absent |
+| Root installs all four current IO Wasms via target-local chunks | Four physical module hashes and proposal IDs in `root-install-proposals.json` | Revised human-vote execution requires current-source validation |
 | Timer-only TopUp, 14-day return, semantic redemption and later eligible official reward shares; Jupiter excluded | Completed A/B/C runtime evidence, zero keeper calls | Executed schedules, not a universal time bound |
 | Default blessed framework upgrade without SNS-W deployment registration | Reviewed 143747 → 144202 Governance upgrade, actual Success journal, Root/module/version observations | Future successor compatibility is not implied; custom SNS-specific paths have separate registry restrictions |
 | Fresh current-source raw/gzip bytes across independent source/Cargo-home paths | Four-artifact reproduction; 632 source files bound to 043cde2 | No historical manifest or installed evidence rebound |
-| Recovery, interfaces, stable state, served frontend, full NNS/Stream and strict Clippy | Canonical CI and existing targeted upgrade/recovery suites | Not a single fresh maintained-topology restart/recovery package with authentic Jupiter |
-| Source-built SNS CLI, SNS-W creation/discovery and sale finalization | Historical maintained `lifecycle` phases 10–17, old source-bound packages | These exercise a sale-created fixture, not the accepted launch. Recommend reclassifying creation/finalization as compatibility-only, subject to explicit review |
+| Recovery, interfaces, stable state, served frontend, full NNS/Stream and strict Clippy | Canonical CI and existing targeted upgrade/recovery suites | Not a single fresh maintained-topology restart/recovery package under the accepted human authority |
+| Source-built SNS CLI, SNS-W creation/discovery and sale finalization | Historical maintained `lifecycle` phases 10–17, old source-bound packages | These exercise a sale-created fixture, not the accepted launch. Accepted disposition: creation/finalization are compatibility-only |
 | Maintained host tooling, actual client ingress, restart-safe owned topology, end-to-end evidence packaging and historian convergence | Historical profile; source-aware low-level proofs cover substantial behavior | Fresh direct-genesis package and exact restart/observation gaps need explicit gate disposition; no automatic waiver |
-| Real Jupiter voting and source-decision recovery | None | Required new integration after authority/timing resolution |
+| Production Jupiter voting and source-decision recovery | None | Production-decentralization gate; not an initial acceptance requirement |
 
 `tools/scripts/test-sns-framework --profile lifecycle` delegates to the
-SNS-W creation/finalization runbook. Running that sale exercise would not close
-the missing Jupiter authority or reproduce direct genesis. No fresh historical
+SNS-W creation/finalization runbook. Running that sale exercise would not reproduce the accepted direct genesis. No fresh historical
 sale topology was executed in this review. The mandatory fresh owned-topology
-maintained-lifecycle gate remains **BLOCKED / NOT RUN, pending reviewed
-disposition**. Do not mark it complete, delete it, or create a second active
+maintained-lifecycle gate remains **BLOCKED / NOT RUN** until its unique
+direct-genesis requirements execute. Do not mark it complete, delete it, or create a second active
 launch path. The proposed replacement evidence is the exact direct-genesis
-A/B/C package plus real Jupiter integration and a source-bound maintained
+A/B/C package under the accepted human authority plus a source-bound maintained
 restart/upgrade/observation package for the unique gaps above.
 
 ### Liquidity before unlock
@@ -235,8 +162,8 @@ behavior or scheduler was changed. Source: `docs/architecture/scheduler.md`,
 
 [Read-only preflight](read-only-preflight.md) contains inert commands, exact
 identities, evidence templates and staged approval boundaries. No live request
-was executed. Acceptance SNS Rewards and the independent inflow principal remain
-unset; permanent-neuron visibility/authority and all nine live canister states
+was executed. The acceptance voter is the reviewed operator; its live authentication and the
+independent inflow principal remain unverified; permanent-neuron visibility/authority and all nine live canister states
 are unverified. Controlling another canister does not authorize an operator to
 call `get_full_neuron` as that canister.
 
@@ -313,9 +240,9 @@ represented as runtime passes. The fresh four-Wasm proof remains separately
 source-bound to `043cde2d`, whose executable files are unchanged in reviewed
 master. These hosted results do not validate an unimplemented Jupiter mirror.
 
-Audit priorities: genuine Jupiter authority and upgrade control; action/hash/
-environment binding and irreversible decision finality; voting deadline and
-ambiguous-vote recovery; live neuron authority and staking Account; controller
+Audit priorities: individual acceptance authority, exact Account separation and
+Vote-only limits; future production Jupiter authority, action/hash/environment
+binding, finality, voting deadlines and ambiguous-vote recovery; live neuron authority and staking Account; controller
 handoff and target-subnet chunk stores; exact A/B/C conservation and fee burns;
 paired reward exclusion; semantic redemption safety under delayed liquidity;
 source/artifact provenance, DID and stable compatibility; and the lifecycle
@@ -333,14 +260,17 @@ are permitted. Detailed source restrictions remain in [authority-review.md](auth
 
 ## F. Change control and next gate
 
-This stage changes documentation only. No Jupiter changes, production monetary
-changes, official artifact-pin changes, Candid changes, stable migrations or new
-runtime state are authorized or introduced. No staging, commit, push or merge
-belongs to this stage. General concurrency-policy files remain unchanged.
+The preserved six-file documentation review was committed as
+`919a12c8a05ddc716ccc4b7a41379c524c2cd2dd` before the product decision.
+The new unstaged acceptance implementation reconciles that review with the
+approved individual-control policy. It changes no Jupiter code, production IO
+monetary code, official SNS pins, Candid, stable schema, timer or runtime state.
+General concurrency-policy files remain unchanged. No staging, commit, push,
+merge or live operation is authorized for this working patch.
 
-Next implementation gate: approve a genuine Jupiter governance decision source,
-its deployment/control chain, environment-specific identities, canonical
-proposal binding and deadline contract. Then implement/test the smallest voting
-integration in an independent Jupiter worktree, including pending-vote upgrade
-and negative cases. Until that gate and the listed live/lifecycle/audit gates
-close, IO is **not acceptance ready**.
+Next gate: complete revised focused and canonical validation, then review the
+source-bound evidence and authorize any commit separately. Live operator
+authentication, topology, permanent-neuron evidence, fresh maintained direct-genesis
+lifecycle closure, conditional availability wording and independent audit remain
+required. IO is **not acceptance ready** solely from local authorization tests.
+Production Jupiter integration remains a later separate governance workstream.

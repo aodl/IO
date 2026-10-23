@@ -12,8 +12,8 @@ established. No SNS-W deployment record or completed sale is fabricated.
 | IO initial registration | Four frozen empty dapps appear in typed Root init; Root sole controller before C |
 | Reserve disbursement | Operator controls `IORES001`; standard Governance Disburse pays canonical Stream reserve and burns the real fee |
 | Permanent top-up | Operator transfers derived increment to the exact observed NNS staking Account; existing-ID ClaimOrRefresh needs no control right |
-| Jupiter vote | Sole acceptance Jupiter SNS Rewards principal has Vote; operator cannot vote or escalate; no following bypass |
-| IO installation | Operator submits with 30 IO, Jupiter authentic caller adopts, Governance instructs Root using target-local chunk stores |
+| Acceptance vote | Reviewed human operator separately votes with IOJUP001; exactly Vote, no genesis/checkpoint followees, unrelated callers unauthorized |
+| IO installation | Operator submits with 30 IO, then separately votes with the 100M governance-only neuron, Governance instructs Root using target-local chunk stores |
 | Default framework upgrade | Standard UpgradeSnsToNextVersion; actual six-component deployed version, Root statuses, SNS-W default path and blessed bytes |
 
 Pinned source review at Swap/Governance `98c898f8de068a1fc0e97ebc805f9fa7f315d862`:
@@ -70,3 +70,69 @@ Completed feasibility evidence remains external under
 `/home/codexdev/.codex-io/sns-framework/maintainable-no-sale-20261020` and
 `/home/codexdev/.codex-io/sns-framework/no-sale-probes-20261020`.
 Conversion execution results are reported separately in implementation-status.md.
+
+Acceptance is intentionally individual-controlled. Production Jupiter authority
+and cross-DAO deadlines remain separate requirements. Vote-only prevents ordinary
+permission reassignment and provides no future handover. Standard Vote includes
+following changes; exact empty following is observed at genesis/checkpoints.
+The operator's ability to authenticate with the configured principal is an
+unverified live prerequisite; local PocketIC caller simulation proves authorization
+semantics, not possession of signing credentials.
+
+## Proposal rejection budget and launch liveness
+
+Pinned Governance source `98c898f8de068a1fc0e97ebc805f9fa7f315d862` defines
+`make_proposal` in `rs/sns/governance/src/governance.rs`: SubmitProposal is
+required, effective stake must cover the 10 IO rejection cost, and that cost is
+charged before recording the proposal. `Neuron::stake_e8s` in `neuron.rs`
+subtracts accumulated neuron fees from cached stake. `process_proposal` returns
+the charge on adoption before executing the action. An adopted action that
+subsequently fails execution therefore differs from a rejected or expired
+proposal: rejection retains the charge; execution failure alone does not.
+Validation errors returned before proposal creation incur no proposal charge.
+The real `real_operator_30_io_proposer_fees` case proves adoption releases the
+charge, one expiry and two No decisions retain 30 IO, and the next submission
+fails for insufficient effective stake.
+
+Standard `refresh_neuron` reads the existing staking Account's Ledger balance;
+`claim_or_refresh_neuron` permits refreshing by neuron ID without an additional
+controller privilege. Thus a holder can transfer existing IO to the exact
+IOGOV001 staking Account, pay the real Ledger fee, then refresh its cached stake.
+Refreshing alone neither cancels retained rejection fees nor creates IO. Native
+SNS rewards are zero. ICP funding does not purchase IO in this sale-free launch.
+
+There is **no funded, non-privileged top-up source in the frozen installation
+plan**. Before checkpoint B, reserve IO is operator-disbursable but redirecting
+it to the proposer would change the prescribed full reserve migration and
+30 IO claim baseline. After B, all reserve IO belongs to Stream's exact reserve
+Account; the operator cannot transfer that canister-owned balance. The 100M
+Account is Governance-owned and its neuron grants only Vote, not Disburse or
+SubmitProposal. The reserve-transport neuron is empty, treasury/Swap allocations
+are zero, and no other liquid claim-bearing IO is provided before installation.
+The 30 IO neuron's eventual disbursement burns retained management fees; it does
+not recover the consumed proposal budget. No privileged recovery, new issuance,
+reserve diversion or assumed outside IO donor is part of this launch contract.
+
+After controller handoff Root is sole controller of the four IO targets, and
+Root's `change_canister` authenticates Governance. The operator cannot bypass a
+stalled proposal system by installing directly. With three final rejections and
+no already-submitted proposal capable of restoring progress, this topology can
+become unable to submit the remaining installations or any recovery proposal.
+This is an unrecoverable governance stall **within the frozen plan**, not proof
+that an authorized redesign could never recover it. It is a live acceptance
+risk requiring explicit product sign-off before handoff/genesis, even with the
+same person holding both voting authorities.
+
+Submit only one installation proposal at a time. Verify the exact action,
+target, constructor and artifact hashes offline, confirm both configured neuron
+permissions and the operator's ability to authenticate, then cast the separate
+IOJUP001 Yes promptly against the observed proposal ID and actual deadline.
+Do not depend on wait-for-quiet. Observe adoption, restored proposal-effective
+stake and the target's eventual physical module/controller state before the next
+installation. If execution fails after adoption, stop to diagnose it rather than
+confusing that failure with a retained rejection charge. On the **first retained
+10 IO rejection/expiry charge**, stop further installation submissions and
+funding; preserve the proposal and neuron records and require a reviewed
+continuation decision. Never spend the remaining two charges through blind
+retries. Any proposed replenishment must first identify real available IO,
+Ledger authority, fees and canonical accounting; this review approves none.

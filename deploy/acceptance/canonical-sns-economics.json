@@ -35,7 +35,7 @@
     "vesting_period_seconds": 0,
     "claim_bearing": false,
     "io_reward_eligible": false,
-    "controller_source": "environment-overlay#jupiter_sns_rewards_canister_id"
+    "controller_source": "environment-overlay#governance_voting_principal"
   },
   "reserve_transport_neuron": {
     "stake_e8s": 89999997000000000,

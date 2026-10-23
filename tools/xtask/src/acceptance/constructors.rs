@@ -149,7 +149,10 @@ pub(crate) fn payloads(
         ),
         account(
             gov,
-            Some(sns_neuron_subaccount(id("jupiter")?, JUPITER_GOVERNANCE_MEMO).to_vec()),
+            Some(
+                sns_neuron_subaccount(id("governance_voting_principal")?, JUPITER_GOVERNANCE_MEMO)
+                    .to_vec(),
+            ),
         ),
     ];
     let permanent = c["permanent_neuron_id"]

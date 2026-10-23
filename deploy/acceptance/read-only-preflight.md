@@ -171,22 +171,29 @@ Operating a controller of NNS Manager does not let that person impersonate NNS
 Manager in a Governance query. No hotkey addition, visibility change, neuron
 mutation or new inspection endpoint is authorized.
 
-## 3. Jupiter identities and trust chain
+## 3. Acceptance voting authority and independent inflow
 
-Leave `acceptance_jupiter_sns_rewards_canister_id` and the independent
-`acceptance_jupiter_source_principal` unresolved until supplied and approved.
-For each, verify identity, environment separation, observed module/controllers,
-actual upgrade authority and consistency across the overlay, topology, Accounts
-and constructors. Check the separate ICP source's authorization and activation
-block floor without treating it as a voting principal.
+The sole `governance_voting_principal` is the reviewed human operator
+`zkkkd-i34qc-367ln-e2u7o-ezznu-dkfqh-gtfvz-cviph-6qa4v-evtfs-wqe`.
+It has full reviewed rights on IOGOV001 and exactly Vote on IOJUP001. Check both
+exact staking Accounts, not every Account associated with that principal.
+Require empty genesis and observed ordinary/topic/default followees. Standard
+Vote permits following changes; do not describe their absence as immutable.
+Before any live proposal, separately verify the operator can authenticate as
+this principal through the approved local signing workflow. This plan authorizes
+no identity operation and requests no credentials. Do not describe the human
+principal as an installed SNS Rewards canister.
 
-Before sealing the voter, require the canonical Jupiter decision governance's
-exact principal, reviewed source/module, Root/controller graph, actual proposal
-parameters, finality rule and canonical decision records. Check who can upgrade
-SNS Rewards and hence choose its future votes. Owner-context discovery through
-OpenChat is not that chain. The acceptance voter must remain the sole `{Vote}`
-principal of `IOJUP001`, with no ordinary/topic/default followees. No production
-principal, mock or unresolved authority may satisfy this check.
+The independent `acceptance_jupiter_source_principal` remains unresolved.
+Verify its environment, genuine source authority, module/controllers where it is
+a canister, and activation block floor. It must differ from the operator,
+all nine actual canister roles and known production principals. It grants no
+IO governance voting authority. Production Jupiter SNS Rewards remains separate;
+its decentralized decision source, mirror and deadlines are not acceptance gates.
+
+Vote-only does not provide an ordinary permission handover. A requirement to
+retain and decentralize this same SNS needs a separately reviewed decision
+before live genesis; do not silently add ManageVotingPermission.
 
 ## 4. Later A/B/C evidence and manual approval boundaries
 
@@ -195,11 +202,11 @@ requests distinct from the observation-only approval above.
 
 | Boundary | Evidence required before approval | Later action requiring separate approval |
 | --- | --- | --- |
-| A: construction | Reviewed source/bytes, all nine status/routing/cycles records, authentic permanent baseline, real Jupiter authority/deadline contract and identities, exact Accounts, typed five-component initializers and six-component version | Installation of the approved framework; no canister creation or funding is implied |
+| A: construction | Reviewed source/bytes, all nine status/routing/cycles records, authentic permanent baseline, reviewed human voting identity/authentication and independent ICP source, exact Accounts, typed five-component initializers and six-component version | Installation of the approved framework; no canister creation or funding is implied |
 | Framework / handoff | Actual six-component hashes (Archive template when none running), Normal mode, IO/IO, 1B allocation, exact permissions; target-local upload plan; live status observations | Chunk uploads and sole-controller handoff under the approved plan |
 | B: reserve | Genuine Governance/Root and neuron observations; canonical zero genesis allocations; parked Swap constructor/Adopted/empty buyers/recipes/accepted participation; recorded quarantined default balances | Reserve-neuron disbursement to the canonical Stream reserve Account |
 | Capitalization | Post-reserve total supply, reserve, two explicit staking exclusions, actual fee burn and derived C0; permanent cached/physical principal baseline; approved independent source Accounts and fee budget | Exact transfers for B0=C0, permanent increment ceil(2*C0/3) and independent 10 ICP anchor; no IO issuance |
-| C: refresh / final construction | Exact transfer blocks and Account deltas; existing-neuron identity/configuration reconciliation; independent anchor; no-issuance; final Rust constructors and artifact hashes | Existing-ID ClaimOrRefresh through the genuine authority/standard supported route; each actual IO installation proposal and authenticated Jupiter decision/vote |
+| C: refresh / final construction | Exact transfer blocks and Account deltas; existing-neuron identity/configuration reconciliation; independent anchor; no-issuance; final Rust constructors and artifact hashes | Existing-ID ClaimOrRefresh through the genuine authority/standard supported route; each actual IO installation proposal and separate authenticated human vote through IOJUP001 |
 | Installed readiness | Physical modules and controller graph, NNS then Stream autonomous Ready, frontend served bytes; distinct observed balances | Separately approved acceptance operations; no automatic activation/deployment sign-off |
 
 Canonical undisturbed no-sale observations yield C0=30 IO, B0=30 ICP, permanent
@@ -228,6 +235,6 @@ replicated observation endpoint requires separate approval even though it does
 not authorize a controller or monetary mutation. Do not call it before Root is
 installed or confuse it with a query.
 
-Independent audit, reviewed lifecycle-gate disposition, genuine Jupiter
-integration and the conditional liquidity contract remain separate gates. A
+Independent audit, fresh maintained direct-genesis lifecycle, live operator
+authentication and the conditional liquidity contract remain separate gates. A
 successful read-only inspection alone cannot make acceptance ready.
