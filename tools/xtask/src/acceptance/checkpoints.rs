@@ -21,7 +21,10 @@ pub(crate) fn accounts(context: &Value) -> Result<Value, String> {
     let stream = principal(text(context, "stream")?, "Stream")?;
     let governance = principal(text(context, "governance")?, "Governance")?;
     let operator = principal(text(context, "operator")?, "operator")?;
-    let jupiter = principal(text(context, "jupiter")?, "Jupiter")?;
+    let jupiter = principal(
+        text(context, "governance_voting_principal")?,
+        "governance voter",
+    )?;
     let account = |owner: Principal, sub: [u8; 32]| json!({"owner": owner.to_text(), "subaccount_hex": hex::encode(sub)});
     Ok(json!({
         "io_reserve": account(stream, STREAM_RESERVE_SUBACCOUNT),
@@ -54,7 +57,6 @@ fn validate_context(root: &Path, context: &Value) -> Result<(), String> {
     ];
     for name in [
         "operator",
-        "jupiter",
         "jupiter_source",
         "stream",
         "nns_manager",
@@ -78,6 +80,9 @@ fn validate_context(root: &Path, context: &Value) -> Result<(), String> {
             ));
         }
     }
+    if text(context, "governance_voting_principal")? != text(context, "operator")? {
+        return Err("acceptance voting authority must equal the operator".into());
+    }
     match context["local_fixture"].as_bool() {
         Some(true) => {}
         Some(false) => {
@@ -100,7 +105,7 @@ fn validate_context(root: &Path, context: &Value) -> Result<(), String> {
                 }
             }
             let inputs: Value = read_json(root, &format!("{DIR}/required-inputs.draft.json"))?;
-            validate_genesis_plan(&inputs, true)?;
+            validate_genesis_plan(&inputs)?;
             if !matches!(
                 context["permanent_observation_route"].as_str(),
                 Some("public-list-neurons" | "authorized-get-full-neuron")
@@ -114,7 +119,7 @@ fn validate_context(root: &Path, context: &Value) -> Result<(), String> {
             principal(text(context, "permanent_observer")?, "permanent observer")?;
             for (name, input) in [
                 ("operator", "genesis_controller_principal"),
-                ("jupiter", "acceptance_jupiter_sns_rewards_canister_id"),
+                ("governance_voting_principal", "governance_voting_principal"),
                 ("jupiter_source", "acceptance_jupiter_source_principal"),
             ] {
                 if context[name] != text(&inputs, input)? {
@@ -124,7 +129,7 @@ fn validate_context(root: &Path, context: &Value) -> Result<(), String> {
                 }
             }
             let overlay = overlay(root, "acceptance")?;
-            if overlay.jupiter_sns_rewards_canister_id != text(context, "jupiter")?
+            if overlay.governance_voting_principal != text(context, "governance_voting_principal")?
                 || overlay.fallback_controller_principal != text(context, "operator")?
             {
                 return Err(
@@ -864,17 +869,17 @@ mod tests {
             read_json(&source, &format!("{DIR}/required-inputs.draft.json")).unwrap();
         let operator =
             "zkkkd-i34qc-367ln-e2u7o-ezznu-dkfqh-gtfvz-cviph-6qa4v-evtfs-wqe".to_string();
-        let jupiter = Principal::from_slice(&[52; 29]).to_text();
+        let jupiter = operator.clone();
         let jupiter_source = Principal::from_slice(&[53; 29]).to_text();
         inputs["genesis_controller_principal"] = json!(operator);
-        inputs["acceptance_jupiter_sns_rewards_canister_id"] = json!(jupiter);
+        inputs["governance_voting_principal"] = json!(jupiter);
         inputs["acceptance_jupiter_source_principal"] = json!(jupiter_source);
         inputs["sns_logo_path"] = json!("component-logo.png");
         inputs["permanent_observation_route"] = json!("public-list-neurons");
         inputs["permanent_observer"] = json!(Principal::from_slice(&[55; 29]).to_text());
         let manifest: AcceptanceManifest =
             read_json(&source, &format!("{DIR}/acceptance-manifest.json")).unwrap();
-        let mut context = json!({"local_fixture":false,"root_install":true,"operator":operator,"jupiter":jupiter,"jupiter_source":jupiter_source,"permanent_observation_route":inputs["permanent_observation_route"],"permanent_observer":inputs["permanent_observer"]});
+        let mut context = json!({"local_fixture":false,"root_install":true,"operator":operator,"governance_voting_principal":jupiter,"jupiter_source":jupiter_source,"permanent_observation_route":inputs["permanent_observation_route"],"permanent_observer":inputs["permanent_observer"]});
         for (name, frozen) in [
             ("governance", "sns_governance"),
             ("root", "sns_root"),
@@ -891,7 +896,7 @@ mod tests {
         let mut overlay: Value =
             read_json(&source, &format!("{DIR}/acceptance-identity-overlay.json")).unwrap();
         overlay["fallback_controller_principal"] = json!(operator);
-        overlay["jupiter_sns_rewards_canister_id"] = json!(jupiter);
+        overlay["governance_voting_principal"] = json!(jupiter);
         fs::write(
             root.join(DIR).join("acceptance-identity-overlay.json"),
             serde_json::to_vec(&overlay).unwrap(),
@@ -902,7 +907,14 @@ mod tests {
         validate_context(&root, &context).unwrap();
         for (field, value) in [
             ("stream", json!(Principal::from_slice(&[54; 29]).to_text())),
-            ("jupiter", json!(PRODUCTION_JUPITER_SNS_REWARDS_CANISTER_ID)),
+            (
+                "governance_voting_principal",
+                json!(PRODUCTION_JUPITER_SNS_REWARDS_CANISTER_ID),
+            ),
+            ("jupiter_source", json!(operator)),
+            ("jupiter_source", context["stream"].clone()),
+            ("stream", json!(operator)),
+            ("index", context["ledger"].clone()),
             ("root_install", json!(false)),
         ] {
             let mut bad = context.clone();

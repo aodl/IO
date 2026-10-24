@@ -20,6 +20,6 @@
   "ledger_fee_collector": null,
   "ledger_fee_semantics": "burned",
   "developer_voting_power_multiplier": "Explicitly 100% in each direct genesis neuron",
-  "genesis_neuron_permissions": "Operator and reserve have the reviewed normal permissions; Jupiter has exactly its SNS Rewards principal with Vote only, no followees, without permission removal.",
+  "genesis_neuron_permissions": "Operator and reserve have normal reviewed permissions. IOJUP001 has exactly Vote for the human acceptance operator; production uses its separate Jupiter SNS Rewards principal. No followees or implicit handover rights.",
   "final_source_rule": "The direct-installed framework must match this approved coherent official SNS-W tuple with exact component, source, compressed/raw Wasm and DID pins."
 }

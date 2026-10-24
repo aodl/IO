@@ -2,6 +2,22 @@
 
 This is the handoff index for an independent auditor. It is not a self-audit and does not claim external approval. IO remains prelaunch, Paused/inert where applicable, and not live.
 
+For reviewed sale-free source `76de77b8d997609623f3e84f8dc3a3be4991470b`
+(executable source `043cde2d54573371f0388175963ab9fe141a8aec`), start with the
+[acceptance-readiness handoff](../../deploy/acceptance/readiness-handoff.md) and
+[unexecuted live preflight](../../deploy/acceptance/read-only-preflight.md).
+They distinguish approved individual-controlled acceptance from unresolved
+production Jupiter authority/mirroring/timing. Review the revised working patch
+based on `919a12c8a05ddc716ccc4b7a41379c524c2cd2dd` and its fresh test evidence
+in implementation-status.md, alongside retained direct-genesis validation,
+lifecycle coverage and conditional liveness claims. Audit exact staking-Account
+exclusions when both neurons share the human permission principal, Vote-only
+limits (including its source-defined following ability), separate inflow
+authority, live operator authentication, and the absence of ordinary permission
+handover. This decision does not authorize deployment or establish decentralized
+Jupiter governance. The recorded release below remains historical evidence for its own
+source; it has not been rebound to this acceptance candidate.
+
 ## Recorded release identity
 
 - Source-finalization commit:

@@ -7,6 +7,6 @@
     "historian": "tjqj3-uaaaa-aaaar-qb7xa-cai",
     "frontend": "torpp-zyaaa-aaaar-qb7xq-cai"
   },
-  "jupiter_sns_rewards_canister_id": "alk7f-5aaaa-aaaar-qb4ra-cai",
+  "governance_voting_principal": "alk7f-5aaaa-aaaar-qb4ra-cai",
   "fallback_controller_principal": "zkkkd-i34qc-367ln-e2u7o-ezznu-dkfqh-gtfvz-cviph-6qa4v-evtfs-wqe"
 }

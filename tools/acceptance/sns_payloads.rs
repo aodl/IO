@@ -71,12 +71,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(context[key].as_str().ok_or("identity missing")?.parse()?)
     };
     let operator = id("operator")?;
-    let jupiter = id("jupiter")?;
+    let jupiter = id("governance_voting_principal")?;
     if config["operator"] != context["operator"]
-        || config["jupiter"] != context["jupiter"]
-        || operator == jupiter
+        || config["governance_voting_principal"] != context["governance_voting_principal"]
+        || !matches!(
+            config["environment"].as_str(),
+            Some("acceptance" | "production" | "local-fixture-not-for-deployment")
+        )
+        || if config["environment"] == "production" {
+            jupiter != "alk7f-5aaaa-aaaar-qb4ra-cai".parse::<PrincipalId>()? || operator == jupiter
+        } else {
+            operator != jupiter
+        }
     {
         return Err("genesis authority differs from context".into());
+    }
+    let mut identities = std::collections::BTreeSet::new();
+    for role in [
+        "operator",
+        "jupiter_source",
+        "governance",
+        "root",
+        "ledger",
+        "index",
+        "swap",
+        "stream",
+        "nns_manager",
+        "historian",
+        "frontend",
+    ] {
+        let value = id(role)?.to_string();
+        if value == "aaaaa-aa" || value == "2vxsx-fae" || !identities.insert(value) {
+            return Err("invalid or colliding constructor identity".into());
+        }
+    }
+    if operator != jupiter && !identities.insert(jupiter.to_string()) {
+        return Err("governance voter collides with another role".into());
     }
     let mut dapps = config["dapp_canisters"]
         .as_array()
@@ -216,7 +246,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             vesting_period_seconds: Some(0),
             ..Default::default()
         };
-        governance.neurons.insert(hex::encode(sub), neuron);
+        if governance
+            .neurons
+            .insert(hex::encode(sub), neuron)
+            .is_some()
+        {
+            return Err("genesis staking subaccounts must be distinct".into());
+        }
         ledger = ledger.with_initial_balance(
             Account {
                 owner: Principal::from(gov_id),

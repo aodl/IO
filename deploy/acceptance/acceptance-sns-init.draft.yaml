@@ -25,7 +25,7 @@
     "initial_voting_period_seconds": 86400,
     "jupiter_governance_neuron": {
       "claim_bearing": false,
-      "controller_source": "environment-overlay#jupiter_sns_rewards_canister_id",
+      "controller_source": "environment-overlay#governance_voting_principal",
       "dissolve_delay_seconds": 1296060,
       "io_reward_eligible": false,
       "memo": 5282522618206892081,
@@ -267,7 +267,7 @@
       72
     ]
   },
-  "jupiter": "TBD_ACCEPTANCE_JUPITER_SNS_REWARDS_CANISTER_ID",
+  "governance_voting_principal": "zkkkd-i34qc-367ln-e2u7o-ezznu-dkfqh-gtfvz-cviph-6qa4v-evtfs-wqe",
   "logo_path": "deploy/acceptance/logo.png",
   "operator": "zkkkd-i34qc-367ln-e2u7o-ezznu-dkfqh-gtfvz-cviph-6qa4v-evtfs-wqe",
   "parked_swap": {

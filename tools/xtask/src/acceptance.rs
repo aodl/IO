@@ -164,7 +164,7 @@ struct Overlay {
     environment: String,
     dapp_canisters: BTreeMap<String, String>,
     fallback_controller_principal: String,
-    jupiter_sns_rewards_canister_id: String,
+    governance_voting_principal: String,
 }
 
 fn read_json<T: for<'de> Deserialize<'de>>(root: &Path, relative: &str) -> Result<T, String> {
@@ -325,7 +325,7 @@ fn expected_accounts(root: &Path) -> Result<Value, String> {
             }));
         }
     }
-    let jupiter_governance_controller = acceptance_overlay.jupiter_sns_rewards_canister_id.as_str();
+    let jupiter_governance_controller = acceptance_overlay.governance_voting_principal.as_str();
     if is_placeholder(jupiter_governance_controller) {
         accounts.push(json!({
             "name": "sns_jupiter_governance_neuron_stake",
@@ -348,10 +348,7 @@ fn expected_accounts(root: &Path) -> Result<Value, String> {
             "sns_jupiter_governance_neuron_stake",
             role(&manifest, "sns_governance")?,
             Some(sns_neuron_subaccount(
-                principal(
-                    jupiter_governance_controller,
-                    "acceptance Jupiter SNS Rewards",
-                )?,
+                principal(jupiter_governance_controller, "acceptance governance voter")?,
                 JUPITER_GOVERNANCE_MEMO,
             )),
             "IO",
@@ -732,7 +729,7 @@ fn validate_economics(e: &Economics) -> Result<(), String> {
         || e.reserve_transport_neuron.memo_domain != "IORES001"
         || e.jupiter_governance_neuron.io_reward_eligible != Some(false)
         || e.jupiter_governance_neuron.controller_source.as_deref()
-            != Some("environment-overlay#jupiter_sns_rewards_canister_id")
+            != Some("environment-overlay#governance_voting_principal")
         || e.governance_neuron.io_reward_eligible.is_some()
         || e.reserve_transport_neuron.io_reward_eligible.is_some()
         || e.governance_neuron.controller_source.is_some()
@@ -804,7 +801,7 @@ fn validate_economics(e: &Economics) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_genesis_plan(inputs: &Value, require_jupiter: bool) -> Result<(), String> {
+fn validate_genesis_plan(inputs: &Value) -> Result<(), String> {
     if inputs.get("sale_plan").is_some()
         || inputs.get("proposal_url").is_some()
         || inputs["final_token_name"] != "IO"
@@ -815,12 +812,8 @@ fn validate_genesis_plan(inputs: &Value, require_jupiter: bool) -> Result<(), St
     {
         return Err("direct-genesis identity, branding or obsolete sale input mismatch".into());
     }
-    if require_jupiter
-        && inputs["acceptance_jupiter_sns_rewards_canister_id"]
-            .as_str()
-            .is_none_or(is_placeholder)
-    {
-        return Err("ACCEPTANCE_JUPITER_SNS_REWARDS_CANISTER_ID unresolved".into());
+    if inputs["governance_voting_principal"] != inputs["genesis_controller_principal"] {
+        return Err("acceptance governance voting principal must be the reviewed operator".into());
     }
     Ok(())
 }
@@ -851,7 +844,7 @@ fn render_sns_yaml(e: &Economics, overlay: &Overlay, inputs: &Value) -> Result<S
         "token_name":"IO", "token_symbol":"IO", "display_name":"IO Protocol",
         "description":format!("IO protocol ({}) direct sale-free genesis",overlay.environment),
         "project_url":inputs["project_url"], "logo_path":inputs["sns_logo_path"],
-        "operator":inputs["genesis_controller_principal"], "jupiter":overlay.jupiter_sns_rewards_canister_id,
+        "operator":inputs["genesis_controller_principal"], "governance_voting_principal":overlay.governance_voting_principal,
         "dapp_canisters":overlay.dapp_canisters.values().collect::<Vec<_>>(),
         "economics":e, "framework_version":version,
         "parked_swap":parked_swap_contract()["parked_swap"]
@@ -863,18 +856,15 @@ fn validate_rendered_yaml(root: &Path, e: &Economics) -> Result<(), String> {
     let production = overlay(root, "production")?;
     let manifest = manifest(root)?;
     let inputs: Value = read_json(root, &format!("{DIR}/required-inputs.draft.json"))?;
-    if !is_placeholder(&acceptance.jupiter_sns_rewards_canister_id) {
+    if !is_placeholder(&acceptance.governance_voting_principal) {
         principal(
-            &acceptance.jupiter_sns_rewards_canister_id,
-            "acceptance Jupiter SNS Rewards",
+            &acceptance.governance_voting_principal,
+            "acceptance governance voter",
         )?;
     }
     if acceptance.environment != "acceptance"
         || acceptance.dapp_canisters.len() != 4
-        || (acceptance.jupiter_sns_rewards_canister_id
-            != "TBD_ACCEPTANCE_JUPITER_SNS_REWARDS_CANISTER_ID"
-            && acceptance.jupiter_sns_rewards_canister_id
-                == PRODUCTION_JUPITER_SNS_REWARDS_CANISTER_ID)
+        || acceptance.governance_voting_principal != inputs["genesis_controller_principal"]
         || acceptance
             .dapp_canisters
             .get("stream_manager")
@@ -905,7 +895,7 @@ fn validate_rendered_yaml(root: &Path, e: &Economics) -> Result<(), String> {
         PRODUCTION_FRONTEND_CANISTER_ID,
     ]);
     if production.environment != "production"
-        || production.jupiter_sns_rewards_canister_id != PRODUCTION_JUPITER_SNS_REWARDS_CANISTER_ID
+        || production.governance_voting_principal != PRODUCTION_JUPITER_SNS_REWARDS_CANISTER_ID
         || production
             .dapp_canisters
             .values()
@@ -963,13 +953,11 @@ fn validate_static_artifacts(root: &Path) -> Result<(), String> {
         }
     }
     let inputs: Value = read_json(root, &format!("{DIR}/required-inputs.draft.json"))?;
-    validate_genesis_plan(&inputs, false)?;
+    validate_genesis_plan(&inputs)?;
     let acceptance_overlay = overlay(root, "acceptance")?;
-    if inputs["acceptance_jupiter_sns_rewards_canister_id"]
-        != acceptance_overlay.jupiter_sns_rewards_canister_id
-    {
+    if inputs["governance_voting_principal"] != acceptance_overlay.governance_voting_principal {
         return Err(
-            "acceptance Jupiter SNS Rewards input and identity overlay must match exactly".into(),
+            "acceptance voting principal input and identity overlay must match exactly".into(),
         );
     }
     let exclusions: Value = read_json(root, &format!("{DIR}/stream-exclusions.draft.json"))?;
@@ -993,13 +981,18 @@ fn validate_static_artifacts(root: &Path) -> Result<(), String> {
     if genesis["neurons"].as_array().map(Vec::len) != Some(3)
         || genesis["neurons"][0]["stake_e8s"] != json!(GOVERNANCE_IO_E8S)
         || genesis["neurons"][0]["stream_excluded"] != false
-        || genesis["neurons"][1]["controller"] != acceptance_overlay.jupiter_sns_rewards_canister_id
+        || genesis["neurons"][1]["controller"] != acceptance_overlay.governance_voting_principal
         || genesis["neurons"][1]["ledger_account_owner"]
             != role(&frozen_manifest, "sns_governance")?
         || genesis["neurons"][1]["memo"] != json!(JUPITER_GOVERNANCE_MEMO)
         || genesis["neurons"][1]["stake_e8s"] != json!(JUPITER_GOVERNANCE_IO_E8S)
         || genesis["neurons"][1]["stream_excluded"] != true
         || genesis["neurons"][1]["permissions"] != json!(["Vote"])
+        || genesis["neurons"][1]["subaccount_hex"] != jupiter_account["subaccount_hex"]
+        || genesis["jupiter_staking_account_derivations"]["acceptance"]["controller"]
+            != acceptance_overlay.governance_voting_principal
+        || genesis["jupiter_staking_account_derivations"]["acceptance"]["subaccount_hex"]
+            != jupiter_account["subaccount_hex"]
         || genesis["neurons"][2]["stake_e8s"] != json!(reserve_stake()?)
         || genesis["neurons"][2]["dissolve_delay_seconds"] != 0
         || genesis["swap_e8s"] != 0
@@ -1126,7 +1119,7 @@ pub(crate) fn validate(root: &Path) -> Result<(), String> {
     validate_manifest(&manifest)?;
     validate_economics(&economics)?;
     let inputs: Value = read_json(root, &format!("{DIR}/required-inputs.draft.json"))?;
-    validate_genesis_plan(&inputs, false)?;
+    validate_genesis_plan(&inputs)?;
     validate_static_artifacts(root)?;
     validate_rendered_yaml(root, &economics)?;
 
@@ -1164,7 +1157,7 @@ pub(crate) fn local_config(root: &Path, context_path: &Path, output: &Path) -> R
     let mut inputs: Value = read_json(root, &format!("{DIR}/required-inputs.draft.json"))?;
     for field in [
         "operator",
-        "jupiter",
+        "governance_voting_principal",
         "stream",
         "nns_manager",
         "historian",
@@ -1199,7 +1192,10 @@ pub(crate) fn local_config(root: &Path, context_path: &Path, output: &Path) -> R
             })
             .collect(),
         fallback_controller_principal: context["operator"].as_str().unwrap().into(),
-        jupiter_sns_rewards_canister_id: context["jupiter"].as_str().unwrap().into(),
+        governance_voting_principal: context["governance_voting_principal"]
+            .as_str()
+            .unwrap()
+            .into(),
     };
     let rendered = render_sns_yaml(&economics(root)?, &local, &inputs)?;
     let mut file = fs::OpenOptions::new()
@@ -1370,7 +1366,7 @@ pub(crate) fn preframework(root: &Path) -> Result<(), String> {
         other => {
             return Err(format!(
                 "unexpected launch Dynamic reconciliation: {other:?}"
-            ))
+            ));
         }
     }
     let redemption = io_core_model::redemption_quote(state, 100_000_000, ICP_TRANSFER_FEE_E8S)
@@ -1523,7 +1519,7 @@ mod tests {
         let mut context = json!({
             "local_fixture": true,
             "operator": Principal::from_slice(&[1; 29]).to_text(),
-            "jupiter": Principal::from_slice(&[2; 29]).to_text(),
+            "governance_voting_principal": Principal::from_slice(&[1; 29]).to_text(),
             "stream": Principal::from_slice(&[3; 29]).to_text(),
             "nns_manager": Principal::from_slice(&[4; 29]).to_text(),
             "historian": Principal::from_slice(&[5; 29]).to_text(),
@@ -1614,11 +1610,14 @@ mod tests {
     fn direct_genesis_rejects_branding_authority_and_sale_inputs() {
         let root = repository_root();
         let inputs: Value = read_json(&root, &format!("{DIR}/required-inputs.draft.json")).unwrap();
-        validate_genesis_plan(&inputs, false).unwrap();
-        assert!(validate_genesis_plan(&inputs, true).is_err());
+        validate_genesis_plan(&inputs).unwrap();
         for (field, value) in [
             ("final_token_name", json!("IO Local Fixture")),
             ("final_token_symbol", json!("IOLT")),
+            (
+                "governance_voting_principal",
+                json!(PRODUCTION_JUPITER_SNS_REWARDS_CANISTER_ID),
+            ),
             (
                 "genesis_controller_principal",
                 json!(Principal::anonymous().to_text()),
@@ -1631,7 +1630,7 @@ mod tests {
         ] {
             let mut bad = inputs.clone();
             bad[field] = value;
-            assert!(validate_genesis_plan(&bad, false).is_err(), "{field}");
+            assert!(validate_genesis_plan(&bad).is_err(), "{field}");
         }
         for (field, value) in [
             ("proposal_reject_cost_e8s", 1u64),
@@ -1736,7 +1735,11 @@ mod tests {
     #[test]
     fn environment_specific_jupiter_controllers_bind_distinct_neuron_accounts() {
         let governance = principal("h7y7s-kyaaa-aaaas-amxrq-cai", "test governance").unwrap();
-        let acceptance = principal("aaaaa-aa", "test acceptance Jupiter").unwrap();
+        let acceptance = principal(
+            "zkkkd-i34qc-367ln-e2u7o-ezznu-dkfqh-gtfvz-cviph-6qa4v-evtfs-wqe",
+            "acceptance voter",
+        )
+        .unwrap();
         let production = principal(
             PRODUCTION_JUPITER_SNS_REWARDS_CANISTER_ID,
             "test production Jupiter",
@@ -1928,7 +1931,7 @@ mod tests {
         );
         mutate(
             "acceptance-identity-overlay.json",
-            "/jupiter_sns_rewards_canister_id",
+            "/governance_voting_principal",
             json!(PRODUCTION_JUPITER_SNS_REWARDS_CANISTER_ID),
         );
         for (field, value) in [
@@ -1964,13 +1967,57 @@ mod tests {
         // Exercise the allowlist itself as well as the full-package consistency gate.
         let overlay_path = root.join(DIR).join("acceptance-identity-overlay.json");
         let mut value: Value = serde_json::from_slice(&fs::read(&overlay_path).unwrap()).unwrap();
-        value["jupiter_sns_rewards_canister_id"] =
-            json!(PRODUCTION_JUPITER_SNS_REWARDS_CANISTER_ID);
+        value["governance_voting_principal"] = json!(PRODUCTION_JUPITER_SNS_REWARDS_CANISTER_ID);
         fs::write(&overlay_path, serde_json::to_vec(&value).unwrap()).unwrap();
         assert!(validate_rendered_yaml(&root, &economics(&root).unwrap())
             .unwrap_err()
             .contains("frozen dapp allowlist"));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn same_voter_keeps_claim_and_governance_only_accounts_distinct() {
+        let operator = principal(
+            "zkkkd-i34qc-367ln-e2u7o-ezznu-dkfqh-gtfvz-cviph-6qa4v-evtfs-wqe",
+            "operator",
+        )
+        .unwrap();
+        let governance = principal("h7y7s-kyaaa-aaaas-amxrq-cai", "Governance").unwrap();
+        let proposer = sns_neuron_subaccount(operator, GOVERNANCE_MEMO);
+        let voting = sns_neuron_subaccount(operator, JUPITER_GOVERNANCE_MEMO);
+        let reserve = sns_neuron_subaccount(operator, RESERVE_MEMO);
+        assert_eq!(
+            hex::encode(proposer),
+            "39d4b187d2057bdc49dc3078c0a8e97efb4dc09c93ce6d35c699665f35b1e053"
+        );
+        assert_eq!(
+            hex::encode(voting),
+            "8d56e3b80021a892f55e161e8725092d866a5f9580badb2d408ebe09dbae5eef"
+        );
+        assert_eq!(
+            hex::encode(reserve),
+            "d7a5e01a747275983dbccdf7b596d55c3816844ac7b3731fa8d6c90e9922fc40"
+        );
+        assert_ne!(proposer, voting);
+        let context = json!({"operator":operator.to_text(), "governance_voting_principal":operator.to_text(), "governance":governance.to_text(), "stream":"gjthz-7iaaa-aaaas-amxuq-cai"});
+        let accounts = checkpoints::accounts(&context).unwrap();
+        let excluded = accounts["excluded_staking_accounts"].as_array().unwrap();
+        assert_eq!(excluded.len(), 2);
+        assert!(excluded
+            .iter()
+            .any(|a| a["owner"] == governance.to_text()
+                && a["subaccount_hex"] == hex::encode(voting)));
+        assert!(!excluded
+            .iter()
+            .any(|a| a["subaccount_hex"] == hex::encode(proposer)));
+        let plan = capitalization_plan(
+            TOTAL_IO_E8S - 10_000,
+            reserve_stake().unwrap() - 10_000,
+            &[JUPITER_GOVERNANCE_IO_E8S],
+        )
+        .unwrap();
+        assert_eq!(plan.claims_e8s, GOVERNANCE_IO_E8S);
+        assert_eq!(plan.permanent_top_up_e8s, 2_000_000_000);
     }
 
     #[test]

@@ -51,7 +51,7 @@ With no command, xtask runs `test_all`.
 | Command | Purpose | Inputs/effects |
 | --- | --- | --- |
 | `simplicity_check` | Enforce production-size, API, authority, and simplified-execution guardrails | Fast, static, no network |
-| `acceptance_preflight [draft\|sealed]` | Validate the frozen acceptance allowlist, parameterized 1B operator/Jupiter/reserve/sale allocation, exact Account exclusions, funding manifests, environment renders, and placeholders offline | Draft checks package consistency; retired sealed mode fails explicitly and directs callers to A/B/C |
+| `acceptance_preflight [draft\|sealed]` | Validate the frozen acceptance allowlist, exact 1B operator/governance-only/reserve allocation, exact Account exclusions, funding manifests, environment renders, and placeholders offline | Draft checks package consistency; retired sealed mode fails explicitly and directs callers to A/B/C |
 | `acceptance_render <acceptance\|production\|accounts>` | Render one canonical acceptance artifact to stdout without network access | Checked drafts must match this output |
 | `acceptance_capitalization` | Derive `C0`, operator `B0=C0`, and rounded `Delta K=2*C0/3` from canonical successful-sale/post-reserve observations | Fails until terminal sale success and all balances/fees/residuals are observed |
 | `acceptance_preframework` | Prove IO-side sale, reserve-migration, claim-rate, 60/40 capitalization, Dynamic-target and redemption arithmetic with an explicit fixture | Does not prove real sale finalization |
