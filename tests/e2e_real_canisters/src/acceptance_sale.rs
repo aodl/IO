@@ -146,7 +146,7 @@ struct Sale {
     pic: pocket_ic::PocketIc,
     operator: Principal,
     buyer: Principal,
-    jupiter: Principal,
+    governance_voter: Principal,
     governance: Principal,
     ledger: Principal,
     root: Principal,
@@ -258,18 +258,8 @@ impl Sale {
         let nns_manager = create(false);
         let historian = create(false);
         let frontend = create(false);
-        let jupiter = create(false);
+        let jupiter = operator;
         let jupiter_source = create(false);
-        pic.install_canister(
-            jupiter,
-            fs::read(
-                workspace()
-                    .join("target/wasm32-unknown-unknown/debug/mock_nns_candidate_actor.wasm"),
-            )
-            .expect("existing actor Wasm required"),
-            vec![],
-            Some(operator),
-        );
         let evidence = workspace().join("target").join(format!(
             "acceptance-genesis-{}-{}",
             std::process::id(),
@@ -279,7 +269,7 @@ impl Sale {
                 .as_nanos()
         ));
         fs::create_dir(&evidence).unwrap();
-        let context = json!({"local_fixture":true,"root_install":true,"operator":operator.to_text(),"jupiter":jupiter.to_text(),"jupiter_source":jupiter_source.to_text(),
+        let context = json!({"local_fixture":true,"root_install":true,"operator":operator.to_text(),"governance_voting_principal":jupiter.to_text(),"jupiter_source":jupiter_source.to_text(),
             "stream":stream.to_text(),"nns_manager":nns_manager.to_text(),"historian":historian.to_text(),"frontend":frontend.to_text(),"governance":governance.to_text(),"root":root.to_text(),"ledger":ledger.to_text(),"index":index.to_text(),"swap":swap.to_text(),
             "logo_path":local_fixture_logo(&evidence),"bundle_path":artifacts.manifest_path.as_ref().unwrap().parent().unwrap(),"parser_tool":parser,"permanent_observation_route":"local-created-neuron"});
         write_json(&evidence.join("context.json"), &context);
@@ -292,7 +282,7 @@ impl Sale {
             pic,
             operator,
             buyer,
-            jupiter,
+            governance_voter: jupiter,
             governance,
             ledger,
             root,
@@ -538,7 +528,7 @@ impl Sale {
             ("operator", self.operator, OPERATOR_MEMO, 3_000_000_000u64),
             (
                 "jupiter",
-                self.jupiter,
+                self.governance_voter,
                 JUPITER_MEMO,
                 10_000_000_000_000_000,
             ),
@@ -640,31 +630,42 @@ impl Sale {
         }
         self.observe_swap("after");
         unauthorized(self.manage(
-            self.operator,
-            gov::compute_neuron_staking_subaccount(self.jupiter, JUPITER_MEMO).to_vec(),
+            self.buyer,
+            gov::compute_neuron_staking_subaccount(self.governance_voter, JUPITER_MEMO).to_vec(),
             gov::Command::RegisterVote(gov::RegisterVote {
                 proposal: Some(gov::ProposalId { id: 1 }),
                 vote: 1,
             }),
         ));
-        for actor in [false, true] {
-            let command = gov::Command::AddNeuronPermissions(gov::AddNeuronPermissions {
-                principal_id: Some(self.operator),
-                permissions_to_add: Some(gov::NeuronPermissionList {
-                    permissions: vec![2],
-                }),
-            });
-            let response = if actor {
-                self.jupiter_manage(command)
-            } else {
+        for caller in [self.operator, self.buyer] {
+            unauthorized(
                 self.manage(
-                    self.operator,
-                    gov::compute_neuron_staking_subaccount(self.jupiter, JUPITER_MEMO).to_vec(),
-                    command,
-                )
-            };
-            unauthorized(response);
+                    caller,
+                    gov::compute_neuron_staking_subaccount(self.governance_voter, JUPITER_MEMO)
+                        .to_vec(),
+                    gov::Command::AddNeuronPermissions(gov::AddNeuronPermissions {
+                        principal_id: Some(self.operator),
+                        permissions_to_add: Some(gov::NeuronPermissionList {
+                            permissions: vec![2, 3, 10],
+                        }),
+                    }),
+                ),
+            );
         }
+        assert_eq!(self.operator, self.governance_voter);
+        let proposer = self.neuron(self.operator, OPERATOR_MEMO);
+        let voting = self.neuron(self.operator, JUPITER_MEMO);
+        assert_ne!(proposer.id, voting.id);
+        assert_eq!(voting.permissions.len(), 1);
+        assert_eq!(voting.permissions[0].principal, Some(self.operator));
+        assert_eq!(voting.permissions[0].permission_type, vec![4]);
+        assert!(voting.followees.is_empty());
+        assert!(voting.topic_followees.is_none());
+        assert_eq!(proposer.permissions[0].principal, Some(self.operator));
+        assert_eq!(
+            proposer.permissions[0].permission_type,
+            (1..=10).collect::<Vec<_>>()
+        );
     }
 
     fn neurons(&self) -> Vec<gov::SnsNeuronRecord> {
@@ -747,7 +748,10 @@ impl Sale {
         let excluded_jupiter = self.ledger_observation(
             "b-jupiter-neuron",
             self.governance,
-            Some(gov::compute_neuron_staking_subaccount(self.jupiter, JUPITER_MEMO).to_vec()),
+            Some(
+                gov::compute_neuron_staking_subaccount(self.governance_voter, JUPITER_MEMO)
+                    .to_vec(),
+            ),
         );
         let operator = self.ledger_observation(
             "b-operator-neuron",
@@ -796,23 +800,11 @@ impl Sale {
             .unwrap()
     }
     fn jupiter_manage(&self, command: gov::Command) -> gov::ManageNeuronResponse {
-        let request = gov::ManageNeuron {
-            subaccount: gov::compute_neuron_staking_subaccount(self.jupiter, JUPITER_MEMO).to_vec(),
-            command: Some(command),
-        };
-        let result: Result<Vec<u8>, String> = decode_one(
-            &self
-                .pic
-                .update_call(
-                    self.jupiter,
-                    self.operator,
-                    "call_governance",
-                    candid::encode_args((self.governance, encode_one(request).unwrap())).unwrap(),
-                )
-                .unwrap(),
+        self.manage(
+            self.operator,
+            gov::compute_neuron_staking_subaccount(self.operator, JUPITER_MEMO).to_vec(),
+            command,
         )
-        .unwrap();
-        decode_one(&result.unwrap()).unwrap()
     }
     fn propose(&self, title: &str, action: gov::Action) -> gov::ManageNeuronResponse {
         self.manage(
@@ -931,12 +923,11 @@ fn normal_genesis_without_sale(complete: bool) {
     // Required constructor identity, not a fabricated sale or Swap state.
     let swap = create(true);
     let stream = create(false);
-    let jupiter = create(false);
+    let jupiter = operator;
     let actor = fs::read(
         workspace().join("target/wasm32-unknown-unknown/debug/mock_nns_candidate_actor.wasm"),
     )
     .expect("existing local caller Wasm required");
-    pic.install_canister(jupiter, actor.clone(), vec![], Some(operator));
     let evidence = workspace().join("target").join(format!(
         "acceptance-no-sale-{}-{}",
         std::process::id(),
@@ -1198,8 +1189,8 @@ fn normal_genesis_without_sale(complete: bool) {
     let fixture = Sale {
         pic,
         operator,
-        buyer: operator,
-        jupiter,
+        buyer: Principal::from_slice(&[102; 29]),
+        governance_voter: jupiter,
         governance,
         root,
         ledger,
@@ -1284,7 +1275,7 @@ fn normal_genesis_without_sale(complete: bool) {
         }),
     );
     unauthorized(fixture.manage(
-        operator,
+        fixture.buyer,
         gov::compute_neuron_staking_subaccount(jupiter, JUPITER_MEMO).to_vec(),
         gov::Command::RegisterVote(gov::RegisterVote {
             proposal: Some(gov::ProposalId { id: 1 }),
@@ -1744,29 +1735,30 @@ fn prove_parked_standard_upgrade(fixture: &Sale, artifacts: &artifacts::Artifact
     assert_eq!(parameters.automatically_advance_target_version, Some(false));
     assert!(parameters.default_followees.unwrap().followees.is_empty());
     let check_permissions = || {
-        let neuron = fixture.neuron(fixture.jupiter, JUPITER_MEMO);
+        let neuron = fixture.neuron(fixture.governance_voter, JUPITER_MEMO);
         assert_eq!(
             neuron.permissions,
             vec![gov::NeuronPermission {
-                principal: Some(fixture.jupiter),
+                principal: Some(fixture.governance_voter),
                 permission_type: vec![4]
             }]
         );
         assert!(neuron.followees.is_empty());
         assert!(neuron.topic_followees.is_none());
-        for caller in [fixture.operator, fixture.jupiter] {
+        for caller in [fixture.operator, fixture.buyer] {
             let command = gov::Command::AddNeuronPermissions(gov::AddNeuronPermissions {
                 principal_id: Some(fixture.operator),
                 permissions_to_add: Some(gov::NeuronPermissionList {
                     permissions: vec![2],
                 }),
             });
-            let response = if caller == fixture.jupiter {
+            let response = if caller == fixture.governance_voter {
                 fixture.jupiter_manage(command)
             } else {
                 fixture.manage(
                     caller,
-                    gov::compute_neuron_staking_subaccount(fixture.jupiter, JUPITER_MEMO).to_vec(),
+                    gov::compute_neuron_staking_subaccount(fixture.governance_voter, JUPITER_MEMO)
+                        .to_vec(),
                     command,
                 )
             };
@@ -2348,7 +2340,7 @@ fn real_operator_30_io_proposer_fees() {
             count * 1_000_000_000
         );
         if count == 1 {
-            // The operator cannot adopt alone while Jupiter abstains.
+            // The proposer vote cannot adopt while the governance-only neuron abstains.
             sale.pic.advance_time(Duration::from_secs(2 * 86_400 + 1));
             for _ in 0..30 {
                 sale.pic.tick();
@@ -2375,19 +2367,22 @@ fn real_operator_30_io_proposer_fees() {
 
 #[test]
 #[ignore = "requires reviewed official SNS-W bundle, parser tool and PocketIC"]
-fn real_jupiter_canister_exact_vote_only_permissions() {
+fn real_acceptance_operator_exact_vote_only_permissions() {
     let sale = Sale::new();
     sale.migrate_reserve();
-    let initial = sale.neuron(sale.jupiter, JUPITER_MEMO);
+    let initial = sale.neuron(sale.governance_voter, JUPITER_MEMO);
     assert_eq!(initial.permissions.len(), 1);
-    assert_eq!(initial.permissions[0].principal, Some(sale.jupiter));
+    assert_eq!(
+        initial.permissions[0].principal,
+        Some(sale.governance_voter)
+    );
     assert_eq!(initial.permissions[0].permission_type, vec![4]);
     assert!(initial.followees.is_empty());
     assert!(initial.topic_followees.is_none());
     let hard = initial;
     unauthorized(sale.manage(
-        sale.operator,
-        gov::compute_neuron_staking_subaccount(sale.jupiter, JUPITER_MEMO).to_vec(),
+        sale.buyer,
+        gov::compute_neuron_staking_subaccount(sale.governance_voter, JUPITER_MEMO).to_vec(),
         gov::Command::RegisterVote(gov::RegisterVote {
             proposal: Some(gov::ProposalId { id: 1 }),
             vote: 1,
@@ -2421,6 +2416,22 @@ fn real_jupiter_canister_exact_vote_only_permissions() {
             }),
         },
     )));
+    unauthorized(sale.jupiter_manage(gov::Command::AddNeuronPermissions(
+        gov::AddNeuronPermissions {
+            principal_id: Some(sale.operator),
+            permissions_to_add: Some(gov::NeuronPermissionList {
+                permissions: vec![2, 3, 10],
+            }),
+        },
+    )));
+    unauthorized(sale.jupiter_manage(gov::Command::RemoveNeuronPermissions(
+        gov::RemoveNeuronPermissions {
+            principal_id: Some(sale.operator),
+            permissions_to_remove: Some(gov::NeuronPermissionList {
+                permissions: vec![4],
+            }),
+        },
+    )));
     sale.pic.advance_time(Duration::from_secs(1_296_061));
     for _ in 0..30 {
         sale.pic.tick();
@@ -2433,10 +2444,10 @@ fn real_jupiter_canister_exact_vote_only_permissions() {
         }),
     })));
     assert_eq!(
-        sale.neuron(sale.jupiter, JUPITER_MEMO).permissions,
+        sale.neuron(sale.governance_voter, JUPITER_MEMO).permissions,
         hard.permissions
     );
-    fs::write(sale.evidence.join("vote-only.txt"), "caller=local_canister\nremaining_permissions=Vote\nremaining_principals=1\nManageVotingPermission=never_granted\nvote=succeeded\npropose_split_configure_grant_disburse=NotAuthorized\n").unwrap();
+    fs::write(sale.evidence.join("vote-only.txt"), "caller=reviewed_operator\nremaining_permissions=Vote\nremaining_principals=1\nManageVotingPermission=never_granted\nvote=succeeded\npropose_split_configure_grant_disburse=NotAuthorized\n").unwrap();
 }
 
 fn write_json(path: &Path, value: &Value) {
@@ -2692,9 +2703,9 @@ impl Sale {
             1_000_000_000,
         );
         assert_eq!(
-            self.neuron(self.jupiter, JUPITER_MEMO).permissions,
+            self.neuron(self.governance_voter, JUPITER_MEMO).permissions,
             vec![gov::NeuronPermission {
-                principal: Some(self.jupiter),
+                principal: Some(self.governance_voter),
                 permission_type: vec![4]
             }]
         );
@@ -2894,6 +2905,7 @@ impl Sale {
             let mut proposals = Vec::new();
             for role in ["nns_manager", "stream", "historian", "frontend"] {
                 let target = Principal::from_text(context[role].as_str().unwrap()).unwrap();
+                let fees_before = self.neuron(self.operator, OPERATOR_MEMO).neuron_fees_e8s;
                 let id = proposal_id(
                     self.propose(
                         &format!("Local install {role} through Governance and Root"),
@@ -2927,12 +2939,48 @@ impl Sale {
                         ),
                     ),
                 );
+                let pending = self.proposal(id);
+                assert_eq!(pending.decided_timestamp_seconds, 0);
+                assert_eq!(pending.executed_timestamp_seconds, 0);
+                assert_eq!(
+                    self.neuron(self.operator, OPERATOR_MEMO).neuron_fees_e8s,
+                    fees_before + 1_000_000_000
+                );
+                unauthorized(self.manage(
+                    self.buyer,
+                    gov::compute_neuron_staking_subaccount(self.operator, JUPITER_MEMO).to_vec(),
+                    gov::Command::RegisterVote(gov::RegisterVote {
+                        proposal: Some(gov::ProposalId { id }),
+                        vote: 1,
+                    }),
+                ));
+                fs::write(
+                    self.evidence
+                        .join(format!("install-{role}-before-vote.bin")),
+                    encode_one(pending).unwrap(),
+                )
+                .unwrap();
                 self.jupiter_vote(id, 1);
                 assert!(
                     self.proposal(id).executed_timestamp_seconds > 0,
                     "Governance/Root install proposal failed: {:?}",
                     self.proposal(id)
                 );
+                assert_eq!(
+                    self.neuron(self.operator, OPERATOR_MEMO).neuron_fees_e8s,
+                    fees_before
+                );
+                let voter = self.neuron(self.operator, JUPITER_MEMO);
+                assert_eq!(voter.permissions.len(), 1);
+                assert_eq!(voter.permissions[0].principal, Some(self.operator));
+                assert_eq!(voter.permissions[0].permission_type, vec![4]);
+                assert!(voter.followees.is_empty());
+                assert!(voter.topic_followees.is_none());
+                fs::write(
+                    self.evidence.join(format!("install-{role}-after-vote.bin")),
+                    encode_one(self.proposal(id)).unwrap(),
+                )
+                .unwrap();
                 let expected =
                     hex::decode(modules[role]["raw_wasm_sha256"].as_str().unwrap()).unwrap();
                 let mut installed = false;
@@ -3419,7 +3467,7 @@ fn real_checkpoint_a_b_negative_cases() {
         ),
         (
             "context.json",
-            "/jupiter",
+            "/governance_voting_principal",
             json!("alk7f-5aaaa-aaaar-qb4ra-cai"),
         ),
         ("context.json", "/nns_manager", json!(sale.stream.to_text())),
@@ -3552,7 +3600,7 @@ fn parsed_acceptance_production_economic_equivalence() {
         "logo_path":local_fixture_logo(&evidence),"genesis_timestamp_seconds":1_800_000_000u64});
     for (i, role) in [
         "operator",
-        "jupiter",
+        "governance_voting_principal",
         "jupiter_source",
         "stream",
         "nns_manager",
@@ -3571,6 +3619,11 @@ fn parsed_acceptance_production_economic_equivalence() {
     }
     let mut projections = Vec::new();
     for environment in ["acceptance", "production"] {
+        context["governance_voting_principal"] = if environment == "acceptance" {
+            context["operator"].clone()
+        } else {
+            json!("alk7f-5aaaa-aaaar-qb4ra-cai")
+        };
         context["fixture_environment"] = json!(environment);
         let path = evidence.join(format!("{environment}-local-context.json"));
         write_json(&path, &context);
@@ -3653,6 +3706,11 @@ fn parsed_acceptance_production_economic_equivalence() {
             Value::Null,
         ),
         ("token-symbol", "/token_symbol", json!("IOLT")),
+        (
+            "acceptance-voter",
+            "/governance_voting_principal",
+            json!("alk7f-5aaaa-aaaar-qb4ra-cai"),
+        ),
     ] {
         let mut invalid = original.clone();
         *invalid.pointer_mut(pointer).unwrap() = value;
@@ -3675,6 +3733,33 @@ fn parsed_acceptance_production_economic_equivalence() {
         )
         .unwrap();
     }
+    // A self-consistent human voter must still be refused by the production policy.
+    let mut production: Value =
+        serde_json::from_slice(&fs::read(evidence.join("production-local.yaml")).unwrap()).unwrap();
+    let mut production_context: Value =
+        serde_json::from_slice(&fs::read(evidence.join("production-local-context.json")).unwrap())
+            .unwrap();
+    production["governance_voting_principal"] = production["operator"].clone();
+    production_context["governance_voting_principal"] = production_context["operator"].clone();
+    let yaml = evidence.join("invalid-production-human-voter.yaml");
+    let context = evidence.join("invalid-production-human-voter-context.json");
+    write_json(&yaml, &production);
+    write_json(&context, &production_context);
+    let rejected = Command::new(&parser)
+        .arg(yaml)
+        .arg(workspace().join("deploy/acceptance/canonical-sns-economics.json"))
+        .arg(context)
+        .arg(evidence.join("invalid-production-human-voter-payloads"))
+        .output()
+        .unwrap();
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr)
+        .contains("genesis authority differs from context"));
+    fs::write(
+        evidence.join("invalid-production-human-voter.stderr"),
+        rejected.stderr,
+    )
+    .unwrap();
     println!("pinned-parser component evidence: {}", evidence.display());
 }
 
@@ -3830,7 +3915,7 @@ impl Sale {
             .latest_reward_event_participation
             .unwrap();
         let jupiter = self
-            .neuron(self.jupiter, JUPITER_MEMO)
+            .neuron(self.governance_voter, JUPITER_MEMO)
             .latest_reward_event_participation
             .unwrap();
         assert_eq!(
@@ -4092,19 +4177,22 @@ impl Sale {
             .unwrap()
             .followees
             .is_empty());
-        let jupiter = self.neuron(self.jupiter, JUPITER_MEMO);
+        let jupiter = self.neuron(self.governance_voter, JUPITER_MEMO);
         assert_eq!(jupiter.cached_neuron_stake_e8s, 10_000_000_000_000_000);
         assert_eq!(
             self.balance(
                 self.governance,
-                Some(gov::compute_neuron_staking_subaccount(self.jupiter, JUPITER_MEMO).to_vec())
+                Some(
+                    gov::compute_neuron_staking_subaccount(self.governance_voter, JUPITER_MEMO)
+                        .to_vec()
+                )
             ),
             10_000_000_000_000_000
         );
         assert_eq!(
             jupiter.permissions,
             vec![gov::NeuronPermission {
-                principal: Some(self.jupiter),
+                principal: Some(self.governance_voter),
                 permission_type: vec![4]
             }]
         );

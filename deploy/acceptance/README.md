@@ -14,15 +14,27 @@ allocations are zero. Ledger name and symbol are `IO`; display name is
 `IO Protocol`. The temporary PNG and Frontend URL are explicit construction
 inputs. Operator authority is
 `zkkkd-i34qc-367ln-e2u7o-ezznu-dkfqh-gtfvz-cviph-6qa4v-evtfs-wqe`.
-Acceptance Jupiter SNS Rewards is an independent required input.
+The acceptance `governance_voting_principal` is this same human operator,
+not an installed Jupiter SNS Rewards canister. The independent Jupiter ICP
+inflow/source principal remains a required input and confers no voting authority.
 
 Canonical memos `IOGOV001`, `IOJUP001`, `IORES001` and source-defined staking
-subaccount derivations are unchanged. Jupiter has exactly one genesis principal
-with `{Vote}`, 100% voting multiplier, and no ordinary/topic/default followees.
-No subsequent permission-removal proposal is required. The operator cannot vote
-or grant permissions on Jupiter's neuron. Real Jupiter proposal mirroring,
-authenticated decisions, upgrade-safe retries and deadlines remain external
-acceptance requirements; a local caller mock proves authorization only.
+subaccount derivations are unchanged. The 100M governance-only neuron has exactly
+one principal with `{Vote}`, 100% voting multiplier, and no genesis
+ordinary/topic/default followees. The operator submits through the separate
+30 IO neuron and casts the decisive vote through the 100M neuron. An unrelated
+caller cannot vote. The 100M neuron cannot configure, split, disburse, propose
+or manage permissions. No subsequent permission-removal step is required.
+Standard `{Vote}` also permits following changes: checkpoint observations must
+reject followees, rather than claim their absence is enforced permanently.
+
+This is individual-controlled acceptance governance, not decentralized Jupiter
+governance. The production overlay remains bound to the separate production
+Jupiter SNS Rewards canister. Authentic Jupiter authority, proposal mirroring
+and deadline feasibility are production-decentralization requirements.
+The Vote-only acceptance neuron cannot ordinarily reassign its permissions.
+Retaining and decentralizing this same SNS requires a separately reviewed
+handover decision before live genesis; no elevated handover permission is granted.
 
 `tests/e2e_real_canisters/wasms.example.toml` is the approved six-component
 SNS-W tuple after proposal 144202. Each publication, source revision, raw/gzip

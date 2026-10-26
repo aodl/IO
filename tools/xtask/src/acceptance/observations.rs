@@ -305,7 +305,9 @@ pub(super) fn genesis(dir: &Path, context: &Value, b: &Value) -> Result<Value, S
         "operator",
     )?;
     let jupiter = principal(
-        context["jupiter"].as_str().ok_or("Jupiter missing")?,
+        context["governance_voting_principal"]
+            .as_str()
+            .ok_or("Jupiter missing")?,
         "Jupiter",
     )?;
     let neurons: Neurons = decode(dir, "genesis-neurons.bin")?;

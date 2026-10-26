@@ -15,7 +15,7 @@
     },
     {
       "name": "jupiter-governance-only",
-      "controller": "TBD_ACCEPTANCE_JUPITER_SNS_REWARDS_CANISTER_ID",
+      "controller": "zkkkd-i34qc-367ln-e2u7o-ezznu-dkfqh-gtfvz-cviph-6qa4v-evtfs-wqe",
       "ledger_account_owner": "h7y7s-kyaaa-aaaas-amxrq-cai",
       "memo": 5282522618206892081,
       "memo_domain": "IOJUP001",
@@ -26,10 +26,11 @@
       "stream_excluded": true,
       "io_reward_policy": "no credits, recipient entry, or denominator weight",
       "sns_voting_power": "Explicit 100% genesis voting-power multiplier",
-      "custody": "Exactly the Jupiter SNS Rewards principal with Vote only at genesis; no followees.",
+      "custody": "Exactly the acceptance human operator with Vote only; no followees or permission handover rights.",
       "permissions": [
         "Vote"
-      ]
+      ],
+      "subaccount_hex": "8d56e3b80021a892f55e161e8725092d866a5f9580badb2d408ebe09dbae5eef"
     },
     {
       "name": "reserve-transport",
@@ -47,9 +48,9 @@
   "jupiter_staking_account_derivations": {
     "acceptance": {
       "owner": "h7y7s-kyaaa-aaaas-amxrq-cai",
-      "controller": "TBD_ACCEPTANCE_JUPITER_SNS_REWARDS_CANISTER_ID",
+      "controller": "zkkkd-i34qc-367ln-e2u7o-ezznu-dkfqh-gtfvz-cviph-6qa4v-evtfs-wqe",
       "memo": 5282522618206892081,
-      "subaccount_hex": "TBD_DERIVED_AFTER_JUPITER_SNS_REWARDS_MEMO_5282522618206892081"
+      "subaccount_hex": "8d56e3b80021a892f55e161e8725092d866a5f9580badb2d408ebe09dbae5eef"
     },
     "production": {
       "owner": null,

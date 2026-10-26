@@ -5,9 +5,12 @@ mainnet query, identity access, funding, installation or controller change.
 The nine acceptance IDs in acceptance-manifest.json are frozen. Resolve external
 inputs explicitly; stop on any mismatch or unresolved required stage input.
 
-1. Reserve an uncontended runner. Record CPU, RAM, free disk and active parent
-   aggregates as well as their current test children. Use PocketIC 14 and execute
-   suites serially; never stop another workspace's job.
+1. Check available CPU, RAM, free disk and active parent aggregates as well as
+   their current test children. Run IO value-moving suites serially on PocketIC
+   14 with independent servers/state/output paths. Independent projects may run
+   concurrently when measured capacity and path isolation support it; defer
+   resource-intensive work on demonstrated contention. Never stop another
+   workspace's job. General agent-policy amendments require separate review.
 2. Verify the approved official lock, each component's raw/gzip bytes and DID,
    clean pinned constructor source and adapter/build binding. Build optimized
    current-source IO Wasms and isolated acceptance browser/Wasm artifacts.
@@ -22,7 +25,7 @@ inputs explicitly; stop on any mismatch or unresolved required stage input.
    Governance is Normal at genesis, with a truthful standard six-component
    deployed_version, capacity 1000, zero native rewards and automatic target
    advancement false. Ledger must report IO/IO and exactly the three canonical
-   staking Accounts totaling 1 billion IO. Jupiter is sole Vote-only at genesis;
+   staking Accounts totaling 1 billion IO. The human operator is the sole Vote-only principal of IOJUP001 at genesis;
    no permission-removal step or default/topic/ordinary following is permitted.
 5. Upload the four IO raw Wasms through the supported chunk path to each target
    itself before handoff. Establish sole-controller topology: Governance owns
@@ -58,11 +61,19 @@ inputs explicitly; stop on any mismatch or unresolved required stage input.
    binds audited principal, activation block floor, exact backing/anchor,
    no-issuance, installed module expectations and Root install authority. Keep
    source approval separate from byte-for-byte artifact verification.
-10. Operator proposes each IO installation; actual Jupiter principal votes;
+10. Follow the rejection-budget policy in authority-review.md. Obtain explicit
+    product sign-off on the no-funded-recovery governance-stall risk before
+    genesis/controller handoff. Submit one installation at a time, verify actual
+    deadline and fee release on adoption, and stop after the first retained
+    10 IO rejection/expiry charge or failed execution. No blind retry or assumed
+    reserve-funded top-up is permitted. Operator proposes each installation with
+    IOGOV001, then separately votes
+    through IOJUP001 with the same authenticated principal;
     Governance/Root installs Stream, NNS Manager, Historian and Frontend. Observe
     final physical module hashes/controllers, served browser bytes and autonomous
-    readiness. Actual Jupiter mirror implementation remains a separate acceptance
-    requirement even after a local mock caller succeeds.
+    readiness. Verify operator authentication separately before live proposals;
+    local caller simulation is not proof of signing authority. Jupiter mirroring
+    remains a production-decentralization requirement, not an acceptance gate.
 11. Rehearse timer-only Dynamic reconciliation, structural TopUp, legitimate
     operator-neuron disbursement, exact redemption and subsequent eligible reward
     shares with Jupiter excluded. After readiness use only simulated time, ticks
@@ -121,3 +132,7 @@ The exact primary test is `acceptance_sale::real_launch_checkpoints_a_b_c`;
 checkpoint mutation, proposer, Vote-only, public NNS and standard-upgrade cases
 remain independently executable. Retain their full logs. Historical sale-only
 records under history/ are immutable evidence, never active authority.
+
+Acceptance voting authority cannot ordinarily be transferred from the Vote-only
+100M neuron. If the same acceptance SNS must later be decentralized, stop for a
+separate handover decision before live genesis. Do not grant elevated permissions.

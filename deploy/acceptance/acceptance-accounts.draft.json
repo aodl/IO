@@ -38,14 +38,14 @@
       "icp_account_identifier": null,
       "icrc_account": {
         "owner": "h7y7s-kyaaa-aaaas-amxrq-cai",
-        "subaccount_hex": "TBD_DERIVED_AFTER_JUPITER_SNS_REWARDS_MEMO_5282522618206892081"
+        "subaccount_hex": "8d56e3b80021a892f55e161e8725092d866a5f9580badb2d408ebe09dbae5eef"
       },
       "initial_expected_balance_e8s": 10000000000000000,
       "name": "sns_jupiter_governance_neuron_stake",
       "owner": "h7y7s-kyaaa-aaaas-amxrq-cai",
       "role": "excluded Jupiter governance-only neuron",
       "steady_state_classification": "permanently staked and economically excluded",
-      "subaccount_hex": "TBD_DERIVED_AFTER_JUPITER_SNS_REWARDS_MEMO_5282522618206892081",
+      "subaccount_hex": "8d56e3b80021a892f55e161e8725092d866a5f9580badb2d408ebe09dbae5eef",
       "user_funding_required": false
     },
     {
