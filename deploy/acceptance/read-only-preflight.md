@@ -235,6 +235,9 @@ replicated observation endpoint requires separate approval even though it does
 not authorize a controller or monetary mutation. Do not call it before Root is
 installed or confuse it with a query.
 
-Independent audit, fresh maintained direct-genesis lifecycle, live operator
-authentication and the conditional liquidity contract remain separate gates. A
-successful read-only inspection alone cannot make acceptance ready.
+Independent audit, live operator authentication and the conditional liquidity
+contract remain separate gates. The [maintained direct-genesis runtime proof](maintained-lifecycle.md)
+and its exact-head hosted canonical CI closure passed. Live operator
+authentication remains unverified. A successful
+read-only inspection alone cannot make acceptance ready. No live request is
+authorized by this local evidence.

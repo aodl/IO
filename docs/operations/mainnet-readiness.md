@@ -9,8 +9,13 @@ standard Normal governance, installed parked Swap and sole Root-controlled IO
 roles. The approved official framework source remains distinct from mandatory
 byte-for-byte installation checks. Canonical capitalization derives 30 IO of
 claims, 30 ICP backing, 20 ICP new permanent capital and a separate 10 ICP anchor.
-Actual Jupiter canister voting integration, live permanent-neuron visibility and
-the separate fresh owned-topology lifecycle remain external prerequisites.
+Acceptance uses the reviewed individual proposer and separate Vote-only neuron;
+Jupiter DAO mirroring remains a future production-decentralization requirement.
+Live operator authentication, independent Jupiter ICP source, permanent-neuron
+visibility and nine-canister topology remain external prerequisites. The fresh
+[maintained runtime proof](../../deploy/acceptance/maintained-lifecycle.md) and
+hosted canonical closure passed on their recorded sources. This satisfies the
+local lifecycle gate, not live acceptance or release/installation approval.
 Conversion execution and new artifact evidence are reported in
 [acceptance status](../../deploy/acceptance/implementation-status.md). The release
 pair below retains historical authority for its own source only.
@@ -61,8 +66,8 @@ Local completion does not establish mainnet readiness. Launch remains blocked
 on:
 
 - exact installed-byte, six-component version and parked-Swap verification for
-  the accepted official SNS-W tuple after proposal 144202, plus the separate
-  fresh owned-topology lifecycle evidence;
+  the accepted official SNS-W tuple after proposal 144202, plus successful
+  canonical closure of the executed fresh owned-topology lifecycle proof;
 - final production SNS/tokenomics/configuration values and identities;
 - hosted test, security and reproducible-build CI on the exact documentation
   tail head;

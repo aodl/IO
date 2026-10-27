@@ -113,5 +113,7 @@ cargo run --offline --locked -p xtask -- acceptance_genesis_real
 The local executable needs the explicit artifact inputs in [runbook.md](runbook.md).
 Preserved [historical sale evidence](history/sale-architecture-2026-10-18/README.md)
 is not deployment authority or an active fallback. Feasibility probes and their
-external evidence remain intact. The separate fresh owned-topology maintained
-lifecycle requirement remains BLOCKED / NOT RUN until actually completed.
+external evidence remain intact. The fresh owned-topology maintained sale-free
+[runtime proof and canonical closure passed](maintained-lifecycle.md) on their
+recorded sources. The original host resource interruptions remain retained;
+live identity, topology, funding, release/installation and audit gates remain open.

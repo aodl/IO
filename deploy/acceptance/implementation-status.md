@@ -1,7 +1,78 @@
 # Sale-free acceptance conversion
 
-Readiness: **INDIVIDUAL-CONTROLLED ACCEPTANCE DEVELOPMENT VALIDATION PASSED**.
-Development integration is recommended; live acceptance gates remain open.
+Readiness: **DEVELOPMENT VALIDATED; FRESH MAINTAINED SALE-FREE LIFECYCLE
+SATISFIED LOCALLY**. Live acceptance and release/installation gates remain open.
+
+## Maintained lifecycle tranche — runtime and canonical validation passed
+
+The new test-only commit is `7a77fb7ff64612aa34cbdaec75a6bfd3acdc5d6c`,
+tree `3af44ff8740fd4784763ccca7f155ad3a227d068`, based on merged master
+`389c9ae754b64e7821cd6a4054ead7152c72c3af`. Its new ignored maintained
+sale-free case executed once successfully (854.82 seconds, exit 0), including
+real signed local Ledger ingress, standard SNS-controlled NNS/Historian
+upgrades, automatic recovery, full A/B/C monetary progression and final
+Historian convergence. The [source-bound record](maintained-lifecycle.md)
+contains the coverage matrix, commands, raw evidence paths and hashes.
+
+Affected host tests passed 107 + 4 cases; 82 opt-in cases were ignored by that
+host command, not counted as executions. Affected strict Clippy and static
+checks passed. The separate new ignored case really ran. The original four
+current-source raw/gzip artifacts still match independent reproduction; no
+production code, schema, allocation, permission or official SNS pin changed.
+
+Canonical CI on clean `7a77fb7` passed recorded-source A/B reproduction,
+security, frontend and static/unit phases, then lost its owned Stream server
+during severe host memory pressure and an OOM event. Stream recorded 8 passes
+and 16 transport failures. The failed aggregate was deliberately stopped
+(exit -15; monitor shell 241), all 75 pre-existing assets restored, and the
+worktree verified clean. Full NNS 29/29 and final workspace Clippy did not
+execute. No functional canister defect is established; no source correction
+was made. This original failure remains environmental evidence, not a completed
+canonical result or a demonstrated monetary regression.
+
+Hosted verification on exact candidate `76cd7ce0cd4f88c3ae2d43dbb8a7e744df1f20cc`,
+tree `2aa76fc2c3a46ac5138cf165e92e155e2ff4ea42`, completed on 2026-10-27
+through [PR #12](https://github.com/aodl/IO/pull/12):
+
+| Gate | Actual result |
+| --- | --- |
+| [Canonical test, run 40468353014](https://github.com/aodl/IO/actions/runs/40468353014), job 122069140596 | `cargo run -p xtask -- test_ci`: exit 0; every required aggregate group passed |
+| Full Stream target | 24/24 in each of three invocations: 669.65 / 669.48 / 669.16 seconds; zero failed, ignored or filtered |
+| Full NNS recovery | 29/29 in 523.62 seconds; zero failed, ignored or filtered |
+| Final strict Clippy | `cargo clippy --workspace --all-targets --all-features -- -D warnings`: passed |
+| Security / interfaces / stable state / frontend / Wasm / provenance | All required canonical groups passed |
+| [Security, run 40468353015](https://github.com/aodl/IO/actions/runs/40468353015) | Success; cargo-deny and cargo-audit passed |
+| [Recorded-release reproduction, run 40468353016](https://github.com/aodl/IO/actions/runs/40468353016) | Success; checked-in = build A = build B for its recorded historical source; distinct from current-source four-Wasm evidence |
+
+The hosted aggregate passed 107 real-canister host cases and ignored 82 opt-in
+cases; it did not execute those ignored cases. Its optional real-artifact manifest
+check explicitly skipped because official Wasms were not configured there. The
+separate maintained lifecycle execution and its pinned artifact evidence above
+supply that opt-in proof. No mandatory canonical group was silently skipped.
+
+A second local canonical attempt on clean `76cd7ce0` was deliberately deferred
+when foreign heavy workloads returned: Stream completed two cases before the
+aggregate was stopped (exit -15; monitor shell 241); full NNS and final Clippy
+did not execute locally. No new OOM occurred (counter stayed 11), all 75 assets
+were restored byte/mode identically, and no foreign process was signalled.
+The half-hour resource sample then showed 4.3 GiB available and zero memory PSI.
+Hosted canonical CI closes the development gate without repeating an identical
+local aggregate or the successful long lifecycle case.
+
+Full hosted logs, run/job metadata, local deferral/restoration evidence and original
+850-file checksum verification are retained at
+`/home/codexdev/.codex-io/sns-framework/maintained-canonical-closure-20261027-8s6y9n1o`.
+`hosted-test.log` SHA-256:
+`895434219533651e53c6b722c4937e6ef23562fab103ef43377251f5a2101f34`.
+The documentation-only closure preserves every executable/release input from
+`76cd7ce0`; hosted checks apply to that published candidate, not the unpublished
+documentation follow-up. Earlier implementation results below retain their own
+source identities.
+
+The runtime package is at
+`/home/codexdev/.codex-io/sns-framework/maintained-sale-free-lifecycle-20261026-nN06zo`.
+No mainnet preflight, push, merge, funding, live identity operation or deployment
+was performed. Historical SNS-W sale lifecycle remains compatibility-only.
 
 The product decision permits the reviewed human operator to propose through
 IOGOV001 and separately vote through the Vote-only IOJUP001 neuron. Authentic

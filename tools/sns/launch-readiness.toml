@@ -11,11 +11,11 @@ evidence = "TODO: external audit/security review."
 
 [sns_config_validated]
 status = "incomplete"
-evidence = "The active acceptance contract is deploy/acceptance/genesis-contract.json: typed direct Normal initialization, installed parked Swap and IO/IO metadata. Exact A/B/C installation, live-neuron evidence and actual Jupiter inputs remain required. The source-built SNS templates are compatibility fixtures, not an alternate launch configuration. The absent optional dfx sns extension is an upstream non-blocking tooling defect for historical compatibility workflows; typed direct initialization does not require it."
+evidence = "The active acceptance contract is deploy/acceptance/genesis-contract.json: typed direct Normal initialization, installed parked Swap and IO/IO metadata. Exact live A/B/C installation, live-neuron evidence, operator authentication and the independent Jupiter ICP source remain required; production Jupiter DAO mirroring is not initial acceptance authority. The source-built SNS templates are compatibility fixtures, not an alternate launch configuration. The absent optional dfx sns extension is an upstream non-blocking tooling defect for historical compatibility workflows; typed direct initialization does not require it."
 
 [local_sns_testing_rehearsal]
-status = "incomplete"
-evidence = "The immutable schema-v2 package deploy/local-sns-rehearsal/evidence/2026-09-03-270dcf3-anchored-dynamic remains evidence for source 270dcf3dc71fc8e7b63c3177b0e3f58fc9246b35 and its recorded artifacts. It predates semantic-staging redemption. Launch readiness requires a fresh authorized local package proving the fixed staging Account, bounded index discovery, canonical block proof, current-rate liquidity gating, exact payout and exact reserve sweep against this source. Historical package bytes were not rewritten or rebound."
+status = "complete"
+evidence = "Fresh individual-controlled sale-free runtime at 7a77fb7ff64612aa34cbdaec75a6bfd3acdc5d6c passed signed local Ledger ingress, SNS-controlled NNS/Historian restarts, autonomous recovery, semantic-staging redemption, exact fees/reward exclusion and Historian convergence. Hosted canonical test run 40468353014 passed on 76cd7ce0cd4f88c3ae2d43dbb8a7e744df1f20cc: Stream 24/24 three times, NNS recovery 29/29 and final strict workspace Clippy. See deploy/acceptance/maintained-lifecycle.md for source-bound logs, original resource interruptions and checksum seals. Historical SNS-W sale creation/finalization is compatibility-only; no historical bytes were rebound. Live acceptance and release gates remain separate."
 
 [mainnet_testflight]
 status = "incomplete"
