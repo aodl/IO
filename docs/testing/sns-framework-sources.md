@@ -6,6 +6,13 @@ the reviewed official lock, a local Governance overlay built from the sibling
 IC checkout, and replay of an immutable resolved bundle. It never deploys or
 contacts an IC mainnet endpoint.
 
+The `lifecycle` adapter exercises historical SNS-W sale creation/finalization
+compatibility. The active sale-free launch uses the single typed acceptance
+fixture and its opt-in `acceptance_sale::real_maintained_sale_free_lifecycle`.
+Its [source-bound runtime proof and canonical-CI limitation](../../deploy/acceptance/maintained-lifecycle.md)
+are separate from historical compatibility evidence. No alternate bootstrap or
+new runner is introduced.
+
 ## Supported interface
 
 | Flag | Environment | Supported values |

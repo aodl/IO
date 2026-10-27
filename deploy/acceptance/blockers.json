@@ -9,9 +9,10 @@
     "Frozen nine-canister empty-module/subnet/controller/cycles observations",
     "Hosted source/artifact approval and release closure for the reproduced current-source IO artifacts",
     "Canonical A/B/C observations and exact backing/top-up/anchor funding plus fees/cycles",
-    "Separate fresh owned-topology maintained lifecycle run; remains BLOCKED / NOT RUN until genuinely completed",
+    "Fresh owned sale-free maintained lifecycle runtime passed at 7a77fb7; tranche closure remains BLOCKED until canonical CI completes after the host OOM/server-loss failure, including Stream 24/24, NNS recovery 29/29 and final strict Clippy. See maintained-lifecycle.md.",
     "Reviewed finite reconciliation/return liveness bound before any liquidity-before-unlock claim at 15d+1m",
     "Independent external audit",
+    "Explicit decision whether this acceptance SNS is disposable or requires future in-place governance handover; IOJUP001 Vote-only permissions provide no ordinary permission-reassignment authority",
     "Product approval of conditional liquidity availability wording; no universal real-time bound is proved",
     "Explicit product sign-off on proposer rejection exhaustion: after full reserve migration no funded non-privileged IO top-up source exists in the frozen plan; three rejections/expiries can prevent all further proposals after Root controller handoff. Stop after the first retained 10 IO charge; see authority-review.md."
   ],

@@ -1,7 +1,42 @@
 # Sale-free acceptance conversion
 
-Readiness: **INDIVIDUAL-CONTROLLED ACCEPTANCE DEVELOPMENT VALIDATION PASSED**.
-Development integration is recommended; live acceptance gates remain open.
+Readiness: **BASE IMPLEMENTATION VALIDATED; MAINTAINED-LIFECYCLE TRANCHE
+PENDING CANONICAL CI**. The integrated base retains its source-bound validation;
+the added test tranche and live acceptance gates remain open.
+
+## Maintained lifecycle tranche — runtime passed, canonical validation blocked
+
+The new test-only commit is `7a77fb7ff64612aa34cbdaec75a6bfd3acdc5d6c`,
+tree `3af44ff8740fd4784763ccca7f155ad3a227d068`, based on merged master
+`389c9ae754b64e7821cd6a4054ead7152c72c3af`. Its new ignored maintained
+sale-free case executed once successfully (854.82 seconds, exit 0), including
+real signed local Ledger ingress, standard SNS-controlled NNS/Historian
+upgrades, automatic recovery, full A/B/C monetary progression and final
+Historian convergence. The [source-bound record](maintained-lifecycle.md)
+contains the coverage matrix, commands, raw evidence paths and hashes.
+
+Affected host tests passed 107 + 4 cases; 82 opt-in cases were ignored by that
+host command, not counted as executions. Affected strict Clippy and static
+checks passed. The separate new ignored case really ran. The original four
+current-source raw/gzip artifacts still match independent reproduction; no
+production code, schema, allocation, permission or official SNS pin changed.
+
+Canonical CI on clean `7a77fb7` passed recorded-source A/B reproduction,
+security, frontend and static/unit phases, then lost its owned Stream server
+during severe host memory pressure and an OOM event. Stream recorded 8 passes
+and 16 transport failures. The failed aggregate was deliberately stopped
+(exit -15; monitor shell 241), all 75 pre-existing assets restored, and the
+worktree verified clean. Full NNS 29/29 and final workspace Clippy did not
+execute. No functional canister defect is established; no source correction
+was made. **This tranche is validation-pending, not integration-ready**, until
+a resource-scheduled canonical rerun exits zero with Stream 24/24, NNS 29/29
+and final strict Clippy. Earlier validated implementation results below retain
+their own source identities; they do not certify this added test tranche.
+
+The runtime package is at
+`/home/codexdev/.codex-io/sns-framework/maintained-sale-free-lifecycle-20261026-nN06zo`.
+No mainnet preflight, push, merge, funding, live identity operation or deployment
+was performed. Historical SNS-W sale lifecycle remains compatibility-only.
 
 The product decision permits the reviewed human operator to propose through
 IOGOV001 and separately vote through the Vote-only IOJUP001 neuron. Authentic

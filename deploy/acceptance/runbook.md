@@ -87,8 +87,10 @@ inputs explicitly; stop on any mismatch or unresolved required stage input.
 12. Freeze source/patch hashes, bundle/DIDs, payloads, raw observations, funding
     blocks, journal outcomes, controller graph, resource heartbeats and test exit
     counts. Complete serial full NNS/Stream targets and canonical test_ci. Keep
-    the independent fresh owned-topology maintained lifecycle requirement BLOCKED
-    / NOT RUN until genuinely completed. No deployment follows automatically.
+    the [maintained lifecycle record](maintained-lifecycle.md) source-bound:
+    runtime passed, but canonical closure remains BLOCKED after the resource
+    failure until full Stream/NNS and final Clippy pass. Historical SNS-W sale
+    phases are compatibility-only. No deployment follows automatically.
 
 Public permanent-neuron observation uses an unrelated caller's authentic typed
 list_neurons request/reply with the exact ID and

@@ -1,11 +1,20 @@
 # Sale-free acceptance: governance and operational handoff
 
-Review date: 2026-10-22. **Individual-controlled acceptance authorized as a product policy; revised implementation validation pending.**
+Authority review: 2026-10-22. Individual-controlled acceptance is authorized;
+the integrated implementation is validated. The [fresh maintained runtime proof](maintained-lifecycle.md)
+passed on 2026-10-26; tranche closure remains pending canonical CI after the
+recorded host resource failure. This is not live acceptance sign-off.
 This document authorizes no network observation, installation, funding, identity
 operation or controller change. The individual-control decision supersedes the
 former acceptance dependency on Jupiter DAO governance.
 
 ## Source and evidence boundary
+
+The current maintained test source is `7a77fb7ff64612aa34cbdaec75a6bfd3acdc5d6c`,
+based on merged master `389c9ae754b64e7821cd6a4054ead7152c72c3af`; see the
+[execution record](maintained-lifecycle.md) for exact trees, hashes and limits.
+The following table and original authority-review results retain their dated
+source identities; they are not new Jupiter observations.
 
 | Repository | Reviewed commit | Git tree | Review state |
 | --- | --- | --- | --- |
@@ -103,23 +112,25 @@ for executed results and source identities.
 | --- | --- | --- |
 | Six official components, direct Normal genesis, exact IO/IO, parked Swap, controller graph | Retained typed A/B/C launch and component/module observations | Live installation observations remain required |
 | 1B distribution, reserve disbursement, C0=30 IO, B0=30 ICP, permanent +20 ICP, independent 10 ICP anchor | A/B/C and negative cases; exact Ledger/NNS records | Repeat with real identities and separately authorized funding |
-| Root installs all four current IO Wasms via target-local chunks | Four physical module hashes and proposal IDs in `root-install-proposals.json` | Revised human-vote execution requires current-source validation |
+| Root installs all four current IO Wasms via target-local chunks | Four physical module hashes and proposal IDs in `root-install-proposals.json` | Fresh human-vote proposals 1–4 passed; live installed-byte observations remain required |
 | Timer-only TopUp, 14-day return, semantic redemption and later eligible official reward shares; Jupiter excluded | Completed A/B/C runtime evidence, zero keeper calls | Executed schedules, not a universal time bound |
 | Default blessed framework upgrade without SNS-W deployment registration | Reviewed 143747 → 144202 Governance upgrade, actual Success journal, Root/module/version observations | Future successor compatibility is not implied; custom SNS-specific paths have separate registry restrictions |
 | Fresh current-source raw/gzip bytes across independent source/Cargo-home paths | Four-artifact reproduction; 632 source files bound to 043cde2 | No historical manifest or installed evidence rebound |
-| Recovery, interfaces, stable state, served frontend, full NNS/Stream and strict Clippy | Canonical CI and existing targeted upgrade/recovery suites | Not a single fresh maintained-topology restart/recovery package under the accepted human authority |
+| Recovery, interfaces, stable state, served frontend, full NNS/Stream and strict Clippy | Canonical CI and existing targeted upgrade/recovery suites | Fresh integrated NNS/Historian restarts passed; new-head canonical full-target/Clippy closure is resource-blocked |
 | Source-built SNS CLI, SNS-W creation/discovery and sale finalization | Historical maintained `lifecycle` phases 10–17, old source-bound packages | These exercise a sale-created fixture, not the accepted launch. Accepted disposition: creation/finalization are compatibility-only |
-| Maintained host tooling, actual client ingress, restart-safe owned topology, end-to-end evidence packaging and historian convergence | Historical profile; source-aware low-level proofs cover substantial behavior | Fresh direct-genesis package and exact restart/observation gaps need explicit gate disposition; no automatic waiver |
+| Maintained host tooling, actual client ingress, restart-safe owned topology, end-to-end evidence packaging and historian convergence | Fresh direct-genesis proof at 7a77fb7, raw signed Ledger effect, actual SNS-controlled restarts and seven Fresh Historian sources | Runtime passed; complete canonical CI is pending after OOM/server loss, not waived |
 | Production Jupiter voting and source-decision recovery | None | Production-decentralization gate; not an initial acceptance requirement |
 
 `tools/scripts/test-sns-framework --profile lifecycle` delegates to the
 SNS-W creation/finalization runbook. Running that sale exercise would not reproduce the accepted direct genesis. No fresh historical
-sale topology was executed in this review. The mandatory fresh owned-topology
-maintained-lifecycle gate remains **BLOCKED / NOT RUN** until its unique
-direct-genesis requirements execute. Do not mark it complete, delete it, or create a second active
-launch path. The proposed replacement evidence is the exact direct-genesis
-A/B/C package under the accepted human authority plus a source-bound maintained
-restart/upgrade/observation package for the unique gaps above.
+sale topology was executed for this tranche. The replacement direct-genesis
+proof has executed successfully: genuine independent signed client ingress,
+SNS-controlled NNS/Historian restarts, canonical recovery, monetary lifecycle
+and Historian convergence are retained in the source-bound package. The gate
+remains **BLOCKED pending canonical CI**, because the shared host exhausted
+memory and lost the Stream server during the aggregate. Require a fresh full
+Stream 24/24, NNS 29/29 and final strict Clippy pass. Do not replace those results
+with historical passes or create a second active launch path.
 
 ### Liquidity before unlock
 
@@ -204,7 +215,8 @@ logs, full CI results and the exact 244 feasibility checksums are indexed by
 [implementation-status.md](implementation-status.md). These are retained proofs,
 not new executions of those long-running tests in this review.
 
-This review reran three focused existing component tests, serially and offline:
+The original 2026-10-22 authority review reran three focused existing component
+tests, serially and offline:
 
 ```sh
 cargo test --offline --locked -p io-proposed-economics-tests anchored_dynamic_backing::candidate_cadences_fit_and_twelve_hours_is_the_slowest_credible_choice -- --exact --nocapture
@@ -262,11 +274,14 @@ are permitted. Detailed source restrictions remain in [authority-review.md](auth
 
 The preserved six-file documentation review was committed as
 `919a12c8a05ddc716ccc4b7a41379c524c2cd2dd` before the product decision.
-The new unstaged acceptance implementation reconciles that review with the
-approved individual-control policy. It changes no Jupiter code, production IO
-monetary code, official SNS pins, Candid, stable schema, timer or runtime state.
-General concurrency-policy files remain unchanged. No staging, commit, push,
-merge or live operation is authorized for this working patch.
+Individual-control implementation `e6126f3` was integrated through master
+`389c9ae7`. Maintained test commit `7a77fb7` adds only test-fixture evidence;
+the documentation follow-up records the successful runtime and failed resource
+attempt without declaring canonical completion. No Jupiter code, production IO
+monetary code, official SNS pin, Candid, stable schema, timer or runtime state
+changed. General concurrency-policy files remain unchanged. Local development
+commits are authorized; push, merge and live operations are not. After canonical
+closure, the next stage is separately authorized read-only live preflight.
 
 Next gate: complete revised focused and canonical validation, then review the
 source-bound evidence and authorize any commit separately. Live operator
