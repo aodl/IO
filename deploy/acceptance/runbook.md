@@ -88,8 +88,9 @@ inputs explicitly; stop on any mismatch or unresolved required stage input.
     blocks, journal outcomes, controller graph, resource heartbeats and test exit
     counts. Complete serial full NNS/Stream targets and canonical test_ci. Keep
     the [maintained lifecycle record](maintained-lifecycle.md) source-bound:
-    runtime passed, but canonical closure remains BLOCKED after the resource
-    failure until full Stream/NNS and final Clippy pass. Historical SNS-W sale
+    runtime passed at `7a77fb7`; hosted canonical closure passed at `76cd7ce0`
+    with full Stream/NNS and final strict Clippy. Preserve the original resource
+    interruptions and their incomplete results. Historical SNS-W sale
     phases are compatibility-only. No deployment follows automatically.
 
 Public permanent-neuron observation uses an unrelated caller's authentic typed

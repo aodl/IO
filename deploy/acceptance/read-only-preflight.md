@@ -237,6 +237,7 @@ installed or confuse it with a query.
 
 Independent audit, live operator authentication and the conditional liquidity
 contract remain separate gates. The [maintained direct-genesis runtime proof](maintained-lifecycle.md)
-passed locally; its canonical CI closure remains resource-blocked. A successful
+and its exact-head hosted canonical CI closure passed. Live operator
+authentication remains unverified. A successful
 read-only inspection alone cannot make acceptance ready. No live request is
 authorized by this local evidence.

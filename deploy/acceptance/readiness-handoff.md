@@ -2,8 +2,9 @@
 
 Authority review: 2026-10-22. Individual-controlled acceptance is authorized;
 the integrated implementation is validated. The [fresh maintained runtime proof](maintained-lifecycle.md)
-passed on 2026-10-26; tranche closure remains pending canonical CI after the
-recorded host resource failure. This is not live acceptance sign-off.
+passed on 2026-10-26; hosted canonical, security and reproducibility checks
+passed on exact candidate `76cd7ce0` on 2026-10-27. The local maintained-lifecycle
+gate is satisfied. This is not live acceptance sign-off.
 This document authorizes no network observation, installation, funding, identity
 operation or controller change. The individual-control decision supersedes the
 former acceptance dependency on Jupiter DAO governance.
@@ -116,9 +117,9 @@ for executed results and source identities.
 | Timer-only TopUp, 14-day return, semantic redemption and later eligible official reward shares; Jupiter excluded | Completed A/B/C runtime evidence, zero keeper calls | Executed schedules, not a universal time bound |
 | Default blessed framework upgrade without SNS-W deployment registration | Reviewed 143747 → 144202 Governance upgrade, actual Success journal, Root/module/version observations | Future successor compatibility is not implied; custom SNS-specific paths have separate registry restrictions |
 | Fresh current-source raw/gzip bytes across independent source/Cargo-home paths | Four-artifact reproduction; 632 source files bound to 043cde2 | No historical manifest or installed evidence rebound |
-| Recovery, interfaces, stable state, served frontend, full NNS/Stream and strict Clippy | Canonical CI and existing targeted upgrade/recovery suites | Fresh integrated NNS/Historian restarts passed; new-head canonical full-target/Clippy closure is resource-blocked |
+| Recovery, interfaces, stable state, served frontend, full NNS/Stream and strict Clippy | Canonical CI and existing targeted upgrade/recovery suites | Hosted canonical run 40468353014 passed on 76cd7ce0: Stream 24/24 three times, NNS recovery 29/29 and final strict workspace Clippy; integrated upgrades are quiescent, separate recovery tests cover pending phases |
 | Source-built SNS CLI, SNS-W creation/discovery and sale finalization | Historical maintained `lifecycle` phases 10–17, old source-bound packages | These exercise a sale-created fixture, not the accepted launch. Accepted disposition: creation/finalization are compatibility-only |
-| Maintained host tooling, actual client ingress, restart-safe owned topology, end-to-end evidence packaging and historian convergence | Fresh direct-genesis proof at 7a77fb7, raw signed Ledger effect, actual SNS-controlled restarts and seven Fresh Historian sources | Runtime passed; complete canonical CI is pending after OOM/server loss, not waived |
+| Maintained host tooling, actual client ingress, restart-safe owned topology, end-to-end evidence packaging and historian convergence | Fresh direct-genesis proof at 7a77fb7, raw signed Ledger effect, actual SNS-controlled restarts and seven Fresh Historian sources | Local requirement passed; complete hosted canonical CI passed on 76cd7ce0; original resource-interrupted attempts remain preserved |
 | Production Jupiter voting and source-decision recovery | None | Production-decentralization gate; not an initial acceptance requirement |
 
 `tools/scripts/test-sns-framework --profile lifecycle` delegates to the
@@ -127,10 +128,12 @@ sale topology was executed for this tranche. The replacement direct-genesis
 proof has executed successfully: genuine independent signed client ingress,
 SNS-controlled NNS/Historian restarts, canonical recovery, monetary lifecycle
 and Historian convergence are retained in the source-bound package. The gate
-remains **BLOCKED pending canonical CI**, because the shared host exhausted
-memory and lost the Stream server during the aggregate. Require a fresh full
-Stream 24/24, NNS 29/29 and final strict Clippy pass. Do not replace those results
-with historical passes or create a second active launch path.
+is **satisfied locally** with the exact-head hosted canonical result in the
+[closure record](maintained-lifecycle.md#canonical-closure-retained-failures-and-remaining-gates).
+The original host OOM/server loss and resource-deferred retry retain their
+incomplete results. Signed ingress proves the returned index, chain length and
+independent balance/fee effects; transaction block fields were not independently
+decoded. No historical sale result is substituted or active launch path added.
 
 ### Liquidity before unlock
 
@@ -276,16 +279,17 @@ The preserved six-file documentation review was committed as
 `919a12c8a05ddc716ccc4b7a41379c524c2cd2dd` before the product decision.
 Individual-control implementation `e6126f3` was integrated through master
 `389c9ae7`. Maintained test commit `7a77fb7` adds only test-fixture evidence;
-the documentation follow-up records the successful runtime and failed resource
-attempt without declaring canonical completion. No Jupiter code, production IO
-monetary code, official SNS pin, Candid, stable schema, timer or runtime state
+the documentation follow-up records successful runtime and hosted canonical
+closure on `76cd7ce0`, while retaining both incomplete local attempts. No Jupiter
+code, production IO monetary code, official SNS pin, Candid, stable schema, timer or runtime state
 changed. General concurrency-policy files remain unchanged. Local development
-commits are authorized; push, merge and live operations are not. After canonical
-closure, the next stage is separately authorized read-only live preflight.
+commits are authorized; push, merge and live operations are not. The next stage
+is separately authorized read-only live preflight.
 
-Next gate: complete revised focused and canonical validation, then review the
-source-bound evidence and authorize any commit separately. Live operator
-authentication, topology, permanent-neuron evidence, fresh maintained direct-genesis
-lifecycle closure, conditional availability wording and independent audit remain
-required. IO is **not acceptance ready** solely from local authorization tests.
+Next gate: review the source-bound evidence for development integration, then
+separately authorize read-only live preflight. Live operator authentication,
+independent Jupiter ICP source, topology, permanent-neuron evidence, conditional
+availability wording, proposer/key-loss and handover decisions, release/installation
+verification and independent audit remain required. IO is **not acceptance ready**
+solely from local lifecycle validation.
 Production Jupiter integration remains a later separate governance workstream.

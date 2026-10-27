@@ -114,5 +114,6 @@ The local executable needs the explicit artifact inputs in [runbook.md](runbook.
 Preserved [historical sale evidence](history/sale-architecture-2026-10-18/README.md)
 is not deployment authority or an active fallback. Feasibility probes and their
 external evidence remain intact. The fresh owned-topology maintained sale-free
-[runtime proof passed](maintained-lifecycle.md); tranche closure remains BLOCKED
-on complete canonical CI after the recorded host memory/server-loss failure.
+[runtime proof and canonical closure passed](maintained-lifecycle.md) on their
+recorded sources. The original host resource interruptions remain retained;
+live identity, topology, funding, release/installation and audit gates remain open.

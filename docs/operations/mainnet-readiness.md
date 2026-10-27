@@ -13,8 +13,9 @@ Acceptance uses the reviewed individual proposer and separate Vote-only neuron;
 Jupiter DAO mirroring remains a future production-decentralization requirement.
 Live operator authentication, independent Jupiter ICP source, permanent-neuron
 visibility and nine-canister topology remain external prerequisites. The fresh
-[maintained runtime proof](../../deploy/acceptance/maintained-lifecycle.md) passed;
-its canonical CI closure is resource-blocked, not complete.
+[maintained runtime proof](../../deploy/acceptance/maintained-lifecycle.md) and
+hosted canonical closure passed on their recorded sources. This satisfies the
+local lifecycle gate, not live acceptance or release/installation approval.
 Conversion execution and new artifact evidence are reported in
 [acceptance status](../../deploy/acceptance/implementation-status.md). The release
 pair below retains historical authority for its own source only.

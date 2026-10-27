@@ -1,6 +1,6 @@
 # Maintained sale-free lifecycle evidence
 
-**Focused runtime: PASS. Tranche closure: BLOCKED pending canonical CI.**
+**PASS — Fresh maintained sale-free lifecycle requirement satisfied locally.**
 No deployment, mainnet observation, push or merge is authorized by this record.
 
 The source starts at master `389c9ae754b64e7821cd6a4054ead7152c72c3af`,
@@ -48,10 +48,10 @@ No local signing material is included.
 | Direct Normal, official tuple, exact IO/IO and 1B supply | Single `Sale` fixture and typed initializer | Fresh owned server/subnets; genesis balances, parameters, deployed/running versions, Root summary and parked Swap records |
 | Human proposer and Vote-only voter | Existing exact genesis/authorization checks | Separate decisive votes; proposals 1–4 install all four IO roles; unrelated caller denied; fees released; no observed followees |
 | A/B/C and capitalization | Existing checkpoint validators and constructors | 30 IO claims, 30 ICP backing, +20 ICP permanent capital, independent 10 ICP anchor; no issuance; exact reserve-transfer fee |
-| Authentic client ingress | Pinned CLI and supported PocketIC loopback gateway | Fresh isolated ephemeral signer transfers 1 ICP on the real local ICP Ledger; response, block 4 and independent balances agree; fee 10,000 e8s |
+| Authentic client ingress | Pinned CLI and supported PocketIC loopback gateway | Fresh isolated ephemeral signer transfers 1 ICP on the real local ICP Ledger; returned index 4, chain-length presence and independent balance/fee effects agree; fee 10,000 e8s. Transaction block fields were not independently decoded |
 | SNS-controlled restart | Standard Governance/Root upgrade and existing target-local chunks | Proposals 5/6 upgrade NNS Manager/Historian with the same raw Wasms; physical versions, hashes and sole Root controllers checked |
 | Canonical recovery | Existing managers, no keeper/debug monetary hook | NNS returns Ready autonomously; permanent stake, complete Dynamic status and Stream checkpoint preserved |
-| Pending/ambiguous phases | Existing exact recovery targets | New integrated upgrades are quiescent; full pending-phase target results still require successful canonical CI on this head |
+| Pending/ambiguous phases | Existing exact recovery targets | New integrated upgrades are quiescent; full 29-case NNS recovery target passed in hosted canonical CI on 76cd7ce0. Separate exact tests supply pending-phase coverage |
 | Historian | Existing `ObservationConfig` and four public APIs | Preserved configuration, honest stale state, timer-only refresh, seven Fresh sources and nine Matching modules; exact canonical accounting and Ledger/Index tip reconciliation |
 | Monetary lifecycle | Existing `redemption_and_reward` helper | Timer-only structural work, real child principal return, current-rate redemption and later eligible reward; 100M neuron excluded |
 | Evidence integrity | Raw fixture outputs | Inventory regression rejects missing, corrupt and extra files; final runtime manifest independently reverified |
@@ -124,7 +124,31 @@ current-source reproduction. Wasm build inputs are unchanged; source comparisons
 and fresh byte hashes are in `reproduction-input-binding.json` and
 `current-artifact-byte-comparisons.json`. No historical release pair is rebound.
 
-## Canonical failure and remaining gates
+## Canonical closure, retained failures and remaining gates
+
+Hosted canonical CI passed on `76cd7ce0cd4f88c3ae2d43dbb8a7e744df1f20cc`,
+tree `2aa76fc2c3a46ac5138cf165e92e155e2ff4ea42`, with unchanged test source
+from `7a77fb7`. [Run 40468353014](https://github.com/aodl/IO/actions/runs/40468353014),
+job 122069140596, executed `cargo run -p xtask -- test_ci` with exit 0:
+Stream 24/24 three times (669.65 / 669.48 / 669.16 seconds), full NNS recovery
+29/29 (523.62 seconds), all required security/static/interface/stable/frontend/
+Wasm/provenance groups, and final strict all-targets/all-features workspace Clippy.
+The Stream/NNS targets had zero ignored or filtered cases. Hosted security run
+40468353015 and recorded-release reproducibility run 40468353016 also succeeded
+on that exact head. The latter remains historical-release evidence, distinct
+from the unchanged current-source four-Wasm reproduction above.
+
+The aggregate's 82 opt-in real-canister cases remained ignored; its optional
+real-artifact manifest check explicitly skipped without configured official
+Wasms. The maintained lifecycle case executed separately with verified inputs.
+No claim is made that all ignored cases ran.
+
+Closure logs, exact run/job metadata and complete inventory/checksum verification
+of the original 850-file package are retained separately at
+`/home/codexdev/.codex-io/sns-framework/maintained-canonical-closure-20261027-8s6y9n1o`.
+Its manifest and `SHA256SUMS` seal the closure evidence without modifying the
+original package or its manifest. The documentation follow-up changes no
+executable or release input; hosted results refer to the published `76cd7ce0`.
 
 Affected host tests passed 107 library and 4 binary cases; 82 opt-in cases were
 ignored in that command. The new ignored lifecycle case ran separately.
@@ -147,11 +171,14 @@ canonical exit -15 (SIGTERM), monitor shell exit 241. The two-case NNS target
 started but was interrupted; **full NNS recovery 29/29 and final workspace
 Clippy did not execute**. All 75 pre-existing asset files were restored
 byte/mode identically; foreign jobs were not signalled. `ci-first-attempt-diagnosis.json`
-and `canonical-ci.log` retain the original failure. Require a complete fresh
-canonical exit zero, Stream 24/24, NNS 29/29 and final strict Clippy before
-closing this tranche. Schedule the retry with sufficient measured headroom
-after the overlapping heavy aggregate; independent editing sessions do not
-require a separate runner or a general exclusivity policy.
+and `canonical-ci.log` retain the original failure unchanged. A local retry on
+clean `76cd7ce0` was proactively stopped after two Stream cases when concurrent
+heavy workloads returned (exit -15; monitor 241). Full NNS and final Clippy
+did not execute in that local retry; OOM stayed 11 and all 75 assets were restored.
+The half-hour resource poll showed recovered headroom (4.3 GiB available, zero
+memory PSI). Hosted canonical success above closes the gate; no duplicate local
+aggregate is required for development integration. Independent editing sessions
+do not require a separate runner or a general exclusivity policy.
 
 Four development attempts failed in new harness assertions before the successful
 run: loopback hostname, management history/routing, version increment expectation,
