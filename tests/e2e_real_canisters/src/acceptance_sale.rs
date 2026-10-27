@@ -90,6 +90,9 @@ const RESERVE_MEMO: u64 = 0x494f_5245_5330_3031;
 #[path = "../../../tools/acceptance/frontend_assets.rs"]
 mod frontend_assets;
 
+#[path = "acceptance_maintained.rs"]
+mod maintained;
+
 // The C boundary performs offline artifact/payload checks without touching PIC.
 // Use the existing harness's owned-server pattern. Offline checks can be
 // delayed by host build contention; wall-clock lifetime is not simulated time.
@@ -223,6 +226,10 @@ fn prepare_io_artifacts(evidence: &Path) {
 
 impl Sale {
     fn new() -> Self {
+        Self::new_with_signed_ingress(false)
+    }
+
+    fn new_with_signed_ingress(signed_ingress: bool) -> Self {
         let artifacts::ArtifactStatus::Ready(artifacts) =
             artifacts::resolve_from_env(true).unwrap()
         else {
@@ -260,7 +267,12 @@ impl Sale {
         let frontend = create(false);
         let jupiter = operator;
         let jupiter_source = create(false);
-        let evidence = workspace().join("target").join(format!(
+        let evidence_parent = std::env::var_os("IO_ACCEPTANCE_EVIDENCE_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| workspace().join("target"));
+        assert!(evidence_parent.is_absolute());
+        fs::create_dir_all(&evidence_parent).unwrap();
+        let evidence = evidence_parent.join(format!(
             "acceptance-genesis-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
@@ -278,7 +290,7 @@ impl Sale {
             &json!({"initial_framework_installer":operator.to_text(),"initial_io_installer":root.to_text(),"route":"direct-Normal-genesis-root-install",
             "initial_registered_dapps":[frontend.to_text(),historian.to_text(),nns_manager.to_text(),stream.to_text()],"io_install_before_controller_handoff":false,"registration_caller":operator.to_text(),"registration_method":"Root init payload","chunk_store":"each target on its own subnet","final_io_controller":root.to_text(),"deployment_parameters_approved":false}),
         );
-        let fixture = Self {
+        let mut fixture = Self {
             pic,
             operator,
             buyer,
@@ -292,6 +304,9 @@ impl Sale {
             evidence,
             _server: Some(server),
         };
+        if signed_ingress {
+            fixture.signed_local_ingress();
+        }
         fixture.prepare_permanent();
         let mut context: Value =
             serde_json::from_slice(&fs::read(fixture.evidence.join("context.json")).unwrap())
@@ -3236,6 +3251,13 @@ fn real_launch_timer_only_top_up_and_reward() {
     sale.install_io(false);
     sale.eligible_reward_event("timer-only-reward");
 }
+
+#[test]
+#[ignore = "fresh owned official sale-free SNS; pinned CLI, current IO Wasms and typed payload tool required"]
+fn real_maintained_sale_free_lifecycle() {
+    maintained::run();
+}
+
 #[derive(CandidType, Deserialize)]
 struct RootSummaryRequest {
     update_canister_list: Option<bool>,
