@@ -9,7 +9,7 @@
     "icp_ledger": "ryjl3-tyaaa-aaaaa-aaaba-cai",
     "nns_governance": "rrkah-fqaaa-aaaaa-aaaaq-cai",
     "two_year_neuron_id": 4021054791166218,
-    "pooled_parent_memo": 0,
+    "pooled_parent_memo": 1,
     "pooled_parent_followee_id": 4021054791166218,
     "jupiter_account": {
       "owner": "TBD_ACCEPTANCE_JUPITER_PRINCIPAL",

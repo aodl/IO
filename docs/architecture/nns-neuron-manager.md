@@ -1,14 +1,19 @@
 # NNS Neuron Manager
 
 The manager controls the protected permanent neuron and one launch-bootstrapped
-**Dynamic 14-day IO neuron**. Before Ready it derives the deterministic memo-0
-staking Account, proves that it does not collide with the permanent-neuron
-Account, observes at least the 10 ICP protocol seed, claims or refreshes the
-neuron, and proves its exact identity and policy. The Dynamic neuron is
+**Dynamic 14-day IO neuron**. Before Ready it derives the deterministic staking
+Account from the configured `pooled_parent_memo`, proves that it does not collide
+with the permanent-neuron Account, observes at least the 10 ICP protocol seed,
+claims or refreshes the neuron, and proves its exact identity and policy. The Dynamic neuron is
 non-dissolving, has an exact `1_209_600`-second delay, has auto-stake maturity
 disabled, and follows the protected permanent IO neuron on the reviewed topics.
 The permanent neuron is recorded and operationally expected to follow the
 alpha-vote neuron, subject only to a separately authorized mainnet inspection.
+
+Existing production configuration retains memo 0. Acceptance uses memo 1 because
+its permanent neuron already occupies memo 0. The two staking Accounts must be
+distinct. This configuration correction changes no protocol economics; the
+anchor, surplus and claim-backing rules below remain the same.
 
 The first 10 ICP is excluded anchor capital. Any positive staking-Account
 residual is excluded unattributed surplus, so hostile dust neither blocks

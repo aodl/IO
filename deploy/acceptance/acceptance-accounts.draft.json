@@ -211,17 +211,17 @@
     {
       "asset": "ICP",
       "excluded_from_claim_supply": false,
-      "icp_account_identifier": "23f97e98045b2376759598bdd5b49e538f1c19cfd96280437f7c72a2cb1b8362",
+      "icp_account_identifier": "560c2dc54ab998307dd21a61d25b3884de46c8f1342feafeee3fa356131b5b60",
       "icrc_account": {
         "owner": "rrkah-fqaaa-aaaaa-aaaaq-cai",
-        "subaccount_hex": "07734f006ddcefc43f9ec1ebcdf0e053811ffd03bbf0b06df8df4a874e3e51d0"
+        "subaccount_hex": "af8baa5ca4d491d32adcdc476230a1a620e7d00624242eb21334437f631951fe"
       },
       "initial_expected_balance_e8s": 0,
       "name": "nns_dynamic_parent_stake",
       "owner": "rrkah-fqaaa-aaaaa-aaaaq-cai",
-      "role": "memo-0 Dynamic parent neuron",
+      "role": "memo-1 Dynamic parent neuron",
       "steady_state_classification": "10 ICP anchor plus claim backing",
-      "subaccount_hex": "07734f006ddcefc43f9ec1ebcdf0e053811ffd03bbf0b06df8df4a874e3e51d0",
+      "subaccount_hex": "af8baa5ca4d491d32adcdc476230a1a620e7d00624242eb21334437f631951fe",
       "user_funding_required": true
     },
     {

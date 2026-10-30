@@ -159,6 +159,18 @@ pub(crate) fn payloads(
         .as_u64()
         .filter(|n| *n != 0 && *n != PROTECTED_IO_NNS_NEURON_ID)
         .ok_or("invalid permanent neuron ID")?;
+    let parent_memo = nns_parent::memo(root)?;
+    let permanent_subaccount = hex::decode(
+        c["permanent_staking_subaccount_hex"]
+            .as_str()
+            .ok_or("observed permanent staking subaccount missing")?,
+    )
+    .map_err(|e| e.to_string())?;
+    if permanent_subaccount.len() != 32
+        || permanent_subaccount == sns_neuron_subaccount(nns, parent_memo)
+    {
+        return Err("Dynamic parent Account collides with permanent staking Account or baseline is malformed".into());
+    }
     let stream_config = StreamConfig {
         io_ledger: id("ledger")?,
         io_index: id("index")?,
@@ -186,7 +198,7 @@ pub(crate) fn payloads(
         icp_ledger: principal(ICP_LEDGER_PRINCIPAL, "ICP")?,
         nns_governance: principal(NNS_GOVERNANCE_PRINCIPAL, "NNS")?,
         two_year_neuron_id: permanent,
-        pooled_parent_memo: 0,
+        pooled_parent_memo: parent_memo,
         pooled_parent_followee_id: permanent,
         jupiter_account: account(jupiter, None),
         jupiter_staging: account(nns, None),
@@ -322,6 +334,80 @@ pub(crate) fn payloads(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn acceptance_memo_one_binds_constructor_accounts_and_funding() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let accounts = expected_accounts(&root).unwrap();
+        let parent = named_account(&accounts, "nns_dynamic_parent_stake").unwrap();
+        assert_eq!(
+            parent["subaccount_hex"],
+            "af8baa5ca4d491d32adcdc476230a1a620e7d00624242eb21334437f631951fe"
+        );
+        assert_eq!(
+            parent["icp_account_identifier"],
+            "560c2dc54ab998307dd21a61d25b3884de46c8f1342feafeee3fa356131b5b60"
+        );
+        let bundle = root.join("target").join(format!(
+            "acceptance-memo-constructor-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&bundle).unwrap();
+        fs::write(bundle.join("manifest.toml"), APPROVED_SNS_LOCK_TEXT).unwrap();
+        let manifest = manifest(&root).unwrap();
+        let mut context = json!({"operator":"zkkkd-i34qc-367ln-e2u7o-ezznu-dkfqh-gtfvz-cviph-6qa4v-evtfs-wqe", "bundle_path":bundle});
+        context["governance_voting_principal"] = context["operator"].clone();
+        context["jupiter_source"] = json!(Principal::from_slice(&[42; 29]).to_text());
+        for (name, role_name) in [
+            ("governance", "sns_governance"),
+            ("root", "sns_root"),
+            ("ledger", "sns_ledger"),
+            ("index", "sns_index"),
+            ("swap", "sns_swap"),
+            ("stream", "stream_manager"),
+            ("nns_manager", "nns_manager"),
+            ("historian", "historian"),
+            ("frontend", "frontend"),
+        ] {
+            context[name] = json!(role(&manifest, role_name).unwrap());
+        }
+        let mut c = json!({"permanent_neuron_id":ACCEPTANCE_NEURON_ID, "permanent_cached_stake_after_refresh_e8s":100_000_000, "jupiter_activation_block_floor":1, "permanent_staking_subaccount_hex":"07734f006ddcefc43f9ec1ebcdf0e053811ffd03bbf0b06df8df4a874e3e51d0"});
+        let mut modules = json!({});
+        for name in ["stream", "nns_manager", "historian", "frontend"] {
+            modules[name] = json!({"raw_wasm_sha256":"01".repeat(32)});
+        }
+        let governance_hash = hex::decode(
+            approved_sns_manifest()
+                .source_sha256("sns_governance")
+                .unwrap(),
+        )
+        .unwrap();
+        let bytes = payloads(&root, &context, &c, governance_hash.clone(), &modules).unwrap();
+        let config = candid::decode_one::<io_nns_neuron_manager::InitArgs>(&bytes["nns_manager"])
+            .unwrap()
+            .config;
+        assert_eq!(config.pooled_parent_memo, 1);
+        assert_eq!(config.two_year_neuron_id, ACCEPTANCE_NEURON_ID);
+        let sub = sns_neuron_subaccount(config.jupiter_staging.owner, config.pooled_parent_memo);
+        assert_eq!(hex::encode(sub), parent["subaccount_hex"]);
+        let funding: Value = read_json(&root, &format!("{DIR}/funding.draft.json")).unwrap();
+        let action = funding["funding_actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["account"] == parent["name"])
+            .unwrap();
+        assert_eq!(action["minimum_required_e8s"], json!(DYNAMIC_ANCHOR_E8S));
+        assert_ne!(
+            c["permanent_staking_subaccount_hex"],
+            parent["subaccount_hex"]
+        );
+        c["permanent_staking_subaccount_hex"] = parent["subaccount_hex"].clone();
+        assert!(payloads(&root, &context, &c, governance_hash, &modules)
+            .unwrap_err()
+            .contains("collides"));
+        fs::remove_dir_all(bundle).unwrap();
+    }
+
     #[test]
     fn typed_constructor_records_match_production_interfaces() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");

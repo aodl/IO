@@ -31,7 +31,8 @@
     },
     {
       "account": "nns_dynamic_parent_stake",
-      "purpose": "Dynamic parent bootstrap and NNS/ICP fee capacity",
+      "purpose": "acceptance memo-1 Dynamic parent bootstrap and NNS/ICP fee capacity; resolve through nns_dynamic_parent_stake in derived Accounts",
+      "prerequisite": "separately verify the memo-1 Account and absence of conflicting live obligations before any funding",
       "minimum_required_e8s": 1000000000,
       "prefunded_fee_count": 100000,
       "replenishable": true,
