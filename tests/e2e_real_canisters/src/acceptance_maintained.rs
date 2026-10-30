@@ -273,7 +273,13 @@ impl Sale {
         );
         assert_eq!(
             parent.staking_account.subaccount,
-            Some(gov::compute_neuron_staking_subaccount(self.role("nns_manager"), 0).to_vec())
+            Some(
+                gov::compute_neuron_staking_subaccount(
+                    self.role("nns_manager"),
+                    nns_parent::memo(&workspace()).unwrap()
+                )
+                .to_vec()
+            )
         );
         assert_eq!(observed.anchor_target_e8s, 1_000_000_000);
         assert_eq!(
@@ -639,7 +645,7 @@ impl Sale {
                     config.nns_governance,
                     Some(Subaccount(gov::compute_neuron_staking_subaccount(
                         config.nns_manager,
-                        0,
+                        nns_parent::memo(&workspace()).unwrap(),
                     ))),
                 )
                 .icp_account_identifier_bytes()

@@ -3228,7 +3228,8 @@ impl Sale {
                 account: Account::new(
                     Principal::from_text(io_production_wiring::NNS_GOVERNANCE_PRINCIPAL).unwrap(),
                     Some(Subaccount(gov::compute_neuron_staking_subaccount(
-                        manager, 0,
+                        manager,
+                        nns_parent::memo(&workspace()).unwrap(),
                     ))),
                 )
                 .icp_account_identifier_bytes()
