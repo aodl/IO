@@ -373,6 +373,9 @@ impl RecoveryFixture {
         };
         if permanent_collision {
             fixture.create_staking_neuron(41, 1_000_000, 63_115_200, pooled_parent_memo);
+        } else if pooled_parent_memo == 1 {
+            // Acceptance's observed protected neuron occupies memo 0.
+            fixture.create_staking_neuron(41, 1_000_000, 63_115_200, 0);
         } else {
             fixture.create_neuron(41, 1_000_000, 63_115_200);
         }
@@ -1270,22 +1273,74 @@ fn account_policy_zero_memo_rejects_permanent_collision_and_accepts_candidate_du
     assert_eq!(collision.state_from_canister().lifecycle, Lifecycle::Paused);
     assert!(collision.state_from_canister().active_operation.is_none());
 
+    account_policy_candidate_dust(0);
+}
+
+#[test]
+fn acceptance_memo_one_preserves_permanent_anchor_surplus_and_parent_after_upgrade() {
+    let _serial = lock_recovery_test();
+    assert!(
+        std::env::var_os("POCKET_IC_BIN").is_some(),
+        "runtime verification requires PocketIC"
+    );
+    account_policy_candidate_dust(1);
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Deserialize)]
+struct PermanentPolicy {
+    controller: Principal,
+    account: Vec<u8>,
+    principal_e8s: u128,
+    maturity_e8s: u128,
+    staked_maturity_e8s: u128,
+    dissolve_delay_seconds: u64,
+    is_dissolving: bool,
+    followee_id: Option<u64>,
+}
+
+fn account_policy_candidate_dust(memo: u64) {
     const CREDIT_E8S: u128 = 100_000_000;
     const UNSOLICITED_E8S: u128 = 50_000_000;
-    let occupied = RecoveryFixture::new_with_policy(0, false);
+    let occupied = RecoveryFixture::new_with_policy(memo, false);
     let candidate = Account {
         owner: occupied.governance,
-        subaccount: Some(parent_staking_subaccount(occupied.manager, 0)),
+        subaccount: Some(parent_staking_subaccount(occupied.manager, memo)),
     };
     occupied.mint_account(candidate.clone(), UNSOLICITED_E8S);
     occupied.create_staking_neuron(
         42,
         io_nns_types::backing::DYNAMIC_ANCHOR_TARGET_E8S + UNSOLICITED_E8S,
         604_800,
-        0,
+        memo,
     );
+    let permanent = || -> Option<PermanentPolicy> {
+        decode_one(
+            &occupied
+                .pic
+                .query_call(
+                    occupied.governance,
+                    Principal::anonymous(),
+                    "debug_get_neuron",
+                    encode_one(NeuronIdArgs { neuron_id: 41 }).unwrap(),
+                )
+                .unwrap(),
+        )
+        .unwrap()
+    };
+    let permanent_before = permanent().unwrap();
+    if memo == 1 {
+        assert_eq!(
+            permanent_before.account,
+            parent_staking_subaccount(occupied.manager, 0)
+        );
+        assert_ne!(
+            permanent_before.account,
+            candidate.subaccount.clone().unwrap()
+        );
+    }
     occupied.await_ready(1);
     assert_eq!(occupied.state_from_canister().lifecycle, Lifecycle::Ready);
+    assert!(occupied.governance_calls().claim_or_refresh > 0);
     let observation = claim_assets(&occupied);
     assert_eq!(observation.claim_bearing_dynamic_principal_e8s, 0);
     assert_eq!(
@@ -1316,7 +1371,10 @@ fn account_policy_zero_memo_rejects_permanent_collision_and_accepts_candidate_du
     assert_eq!(permit.expected_credit_e8s, CREDIT_E8S - permit.fee_e8s);
     assert_eq!(permit.claim_credit_e8s, CREDIT_E8S);
     assert_eq!(permit.destination, candidate);
-    assert_eq!(occupied.state_from_canister().config.pooled_parent_memo, 0);
+    assert_eq!(
+        occupied.state_from_canister().config.pooled_parent_memo,
+        memo
+    );
 
     let stream_liquid = occupied.state_from_canister().config.stream_liquid_account;
     occupied.mint_account(
@@ -1412,6 +1470,21 @@ fn account_policy_zero_memo_rejects_permanent_collision_and_accepts_candidate_du
     let replay_calls: LedgerCallCounters =
         query(&occupied.pic, occupied.ledger, "debug_get_call_counters");
     assert_eq!(replay_calls.transfer, ledger_calls.transfer);
+    occupied.upgrade();
+    occupied.await_ready(1);
+    let recovered = claim_assets(&occupied);
+    assert_eq!(recovered.claim_bearing_dynamic_principal_e8s, CREDIT_E8S);
+    assert_eq!(recovered.excluded_dynamic_surplus_e8s, UNSOLICITED_E8S);
+    let recovered_state = occupied.state_from_canister();
+    assert_eq!(recovered_state.config.pooled_parent_memo, memo);
+    assert_eq!(
+        recovered_state.pooled_parent_staking_account,
+        Some(Account {
+            owner: occupied.governance,
+            subaccount: Some(parent_staking_subaccount(occupied.manager, memo)),
+        })
+    );
+    assert_eq!(permanent().unwrap(), permanent_before);
 }
 
 #[test]

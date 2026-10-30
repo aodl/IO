@@ -87,6 +87,9 @@ const OPERATOR_MEMO: u64 = 0x494f_474f_5630_3031;
 const JUPITER_MEMO: u64 = 0x494f_4a55_5030_3031;
 const RESERVE_MEMO: u64 = 0x494f_5245_5330_3031;
 
+#[path = "../../../tools/acceptance/nns_parent.rs"]
+mod nns_parent;
+
 #[path = "../../../tools/acceptance/frontend_assets.rs"]
 mod frontend_assets;
 
@@ -2711,7 +2714,9 @@ impl Sale {
             Account::new(self.stream, Some(Subaccount(liquid))),
             b0,
         );
-        let anchor = gov::compute_neuron_staking_subaccount(manager, 0);
+        let parent_memo = nns_parent::memo(&workspace()).unwrap();
+        let anchor = gov::compute_neuron_staking_subaccount(manager, parent_memo);
+        assert_ne!(anchor.as_slice(), permanent_sub.as_slice());
         self.transfer_icp(
             self.operator,
             Account::new(nns, Some(Subaccount(anchor))),

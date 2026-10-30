@@ -3,13 +3,19 @@
 These scenarios use canonical ledgers and Governance under PocketIC. They do
 not authorize mainnet work.
 
+The Dynamic parent uses a configured memo. Existing production configuration
+retains memo 0; acceptance uses memo 1 because its permanent neuron already
+occupies memo 0. Their staking Accounts must be distinct. This changes no
+protocol economics; historical memo-0 scenarios remain valid when the Accounts
+are distinct.
+
 1. Jupiter proves the source block, credits permanent capital with 40% gross
    minus its exact fee, credits liquid claim backing with 60% gross minus its
    exact fee, and releases IO at the pre-event `B/C` rate (1:1 only at true
    empty genesis).
-2. Readiness proves the memo-0 Dynamic parent, fixed followee, exact 14-day
-   delay, 10 ICP anchor, and dust-tolerant physical/economic partition before
-   ordinary IO stakes at 0%, 50%, and 100%.
+2. Readiness proves the Dynamic parent at its configured memo, fixed followee,
+   exact 14-day delay, 10 ICP anchor, and dust-tolerant physical/economic partition
+   before ordinary IO stakes at 0%, 50%, and 100%.
 3. Dynamic top-up, Split, and committed child-disbursement fees consume exact
    anchor capacity once, preserve `B`, and stop before effect when capacity is
    insufficient. The parent follows the configured local followee and retains

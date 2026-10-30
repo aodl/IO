@@ -15,12 +15,20 @@ inputs explicitly; stop on any mismatch or unresolved required stage input.
    clean pinned constructor source and adapter/build binding. Build optimized
    current-source IO Wasms and isolated acceptance browser/Wasm artifacts.
    Preserve historical releases and all original tracked/ignored browser assets.
+   Before live installation, separately review a current-source memo-1 integration
+   rehearsal establishing the acceptance deployment behavior. The recorded
+   lifecycle and canonical validation retain their original source bindings;
+   documentation-only finalisation does not require repeating them.
 3. Establish checkpoint A: exact nine identities, compatible framework subnet,
    empty modules, sole observed operator authority and at least 20T cycles each;
    complete permanent NNS baseline and source-bound IO artifacts; canonical
    Accounts and typed five-component constructors. Root init registers exactly
    the four empty IO dapps. No late funding constants or C constructors are
    required at A.
+   The installed bootstrap helper fails the empty-module requirement. Use only
+   the separately authorized retirement procedure below; do not record a null
+   hash until genuinely observed. The 20T floor remains the current gate pending
+   an approved cycles-policy decision; do not lower it or fund to it by default.
 4. Install Ledger, Index, Root, parked Swap and Governance from reviewed bytes.
    Governance is Normal at genesis, with a truthful standard six-component
    deployed_version, capacity 1000, zero native rewards and automatic target
@@ -50,6 +58,22 @@ inputs explicitly; stop on any mismatch or unresolved required stage input.
    `C0=supply-reserve-reserve_neuron-Jupiter_neuron=30 IO`.
 8. Capitalize from those observations: Stream backing `B0=C0` (30 ICP), permanent
    increment `ceil(2*C0/3)` (20 ICP), and independent Dynamic anchor (10 ICP).
+   Acceptance selects Dynamic parent **memo 1** from
+   `io-init-configs.draft.json`; constructors, derived Accounts and the funding
+   fixture read that same selection. Its subaccount is
+   `af8baa5ca4d491d32adcdc476230a1a620e7d00624242eb21334437f631951fe`,
+   ICP AccountIdentifier
+   `560c2dc54ab998307dd21a61d25b3884de46c8f1342feafeee3fa356131b5b60`.
+   The observed permanent neuron already occupies the Manager's memo-0 staking
+   Account. Do not use it for the independent anchor. Before any anchor funding,
+   separately verify its relevant ICP Ledger balance and any known neuron or
+   other live obligations. A zero Ledger balance alone does not prove the absence
+   of every possible neuron record. The completed helper's purpose and known
+   history inform this bounded review; arbitrary unknown-state proof is not
+   required.
+   This correction neither retires that installation nor changes production's
+   memo assignment. Keep the 10 ICP anchor and unattributed surplus excluded
+   from claim backing; preserve the permanent Account and policy.
    Transfer fees and cycles are additional. Do not issue IO. Top up the existing
    permanent staking Account; ClaimOrRefresh the existing ID; verify exact
    before/after cached and Ledger principal with unchanged controller, Account,
@@ -93,13 +117,82 @@ inputs explicitly; stop on any mismatch or unresolved required stage input.
     interruptions and their incomplete results. Historical SNS-W sale
     phases are compatibility-only. No deployment follows automatically.
 
+## One-time acceptance bootstrap-helper retirement
+
+The original operator confirmed on 30 October 2026 that the installed acceptance
+Manager Wasm was a temporary helper used to create the permanent NNS neuron;
+its intended work is complete and its internal state may be discarded when the
+replacement is ready. This records operator intent and disposability, not an
+independent verification of internal state or pending calls. Historical
+Wasm/source/constructor reconstruction is no longer a prerequisite to planning
+retirement. The helper need not be upgrade-compatible with the new Manager;
+do not add legacy stable-state migrations.
+
+The retained query history reports a direct installation on 12 September 2026
+at 21:52:07 UTC by the expected operator
+`zkkkd-i34qc-367ln-e2u7o-ezznu-dkfqh-gtfvz-cviph-6qa4v-evtfs-wqe`, on the exact
+acceptance target `gosbn-sqaaa-aaaas-amxua-cai`, with module hash
+`03e8ba94621d28bf166595a9a9dd0d9943c60caad48c7a2740285a7fee283bbe`.
+The existing permanent neuron `4_021_054_791_166_218` is controlled by that
+Manager principal. Its retained cached principal of 100,000,000 e8s (1 ICP)
+agrees with the independent ICP Ledger staking-balance query. Preserve its
+observed staking Account and policy; query evidence remains time-bound.
+
+This is a future plan, not authority to execute it:
+
+1. Complete the other relevant installation prerequisites and prepare the
+   reviewed replacement artifact and constructor. Defer cleanup until ready to
+   proceed through the existing installation process: uninstall leaves the
+   permanent neuron's controller principal without functioning Manager code
+   until the new installation succeeds.
+2. Immediately before separately authorized cleanup, reverify the exact target,
+   expected sole operator controller and module hash above. Reconfirm the
+   permanent neuron's controller, staking Account and principal baseline using
+   appropriate retained or freshly authorized evidence.
+3. Confirm there is no new material evidence of outstanding helper obligations.
+   Record that uninstall destroys internal state and abandons pending callbacks;
+   it is irreversible, not a reversible pause.
+4. Obtain separate explicit authorization for this exact uninstall. Use the
+   pinned DFX 0.31.0 executable (SHA-256
+   `99728285e3672be4fba71f8d81a6c9484d3e5dc08b973c36ddd577e92ab6caf9`)
+   and reviewed network configuration mapping `ic` to `https://icp-api.io` with
+   the unchanged IC root of trust. The genuine existing operator identity name
+   remains unresolved; replace the quoted placeholder only after binding it to
+   the expected operator principal. No wallet proxy, identity fallback or
+   credential configuration is implied.
+
+   ```sh
+   # INERT PLAN ONLY: separate explicit mainnet authorization required.
+   /home/codexdev/.local/share/dfx/bin/dfx canister uninstall-code \
+     --network ic --identity 'APPROVED_EXISTING_OPERATOR_IDENTITY' \
+     gosbn-sqaaa-aaaas-amxua-cai
+   ```
+
+5. Verify that the module hash is genuinely null, and that the same canister
+   principal, controller settings and available cycles have been preserved,
+   allowing for ordinary execution costs. Stop on any failed precondition or
+   mismatch. If completion is ambiguous, establish the current module state
+   before deciding the next action; never blindly retry the uninstall.
+6. Continue the reviewed installation process and all normal checkpoint checks.
+   Do not delete the canister, create a replacement principal, modify/recreate
+   the permanent neuron, add hotkeys or transfer neuron control. Do not substitute
+   upgrade/reinstall or waive checkpoint A's empty-module requirement.
+
+Checkpoint A remains failed until its actual requirements are met. Root
+privileged status, certified routing/capabilities, operator signing, Jupiter
+source and activation floor, permanent-neuron follow policy, cycles policy and
+funding, conditional liquidity and SNS governance retention remain separate
+outstanding matters.
+
 Public permanent-neuron observation uses an unrelated caller's authentic typed
 list_neurons request/reply with the exact ID and
 include_public_neurons_in_full_neurons=Some(true). Require exactly one matching
 Public full record, complete economic checks, and the same caller's actual
 get_full_neuron NotAuthorized result. Authorized full-neuron replies are accepted
 only from an existing genuine authority. Record the route and caller in reviewed
-inputs and context. Actual acceptance visibility remains unverified. The fresh
+inputs and context. Retained acceptance Group C queries report a Public full
+record and the actual NotAuthorized response; they are time-bound query evidence,
+not independently certified state. The fresh
 local fixture records real DisburseToNeuron and public get_neuron_info before
 installation; NNS Manager subsequently verifies its own full state. This fixture
 is not live-neuron evidence.

@@ -203,10 +203,10 @@ the same physical supply/reserve change. Normal illiquidity creates no debt.
 
 `A_backing` is structurally active ordinary SNS IO; `A_reward` is its currently
 prospective reward-eligible subset. Rewards require pooled principal to cover
-`reward_target`. The memo-0 Dynamic parent exists before Ready, has an exact
-1,209,600-second delay, a fixed configured following policy, and an excluded
-10-ICP anchor. Daily
-proposal-bearing allocations normalize canonical current-event shares;
+`reward_target`. The Dynamic parent uses a configured memo and exists before
+Ready, with an exact 1,209,600-second delay, a fixed configured following policy,
+and an excluded 10-ICP anchor. Daily proposal-bearing allocations normalize
+canonical current-event shares;
 ineligible shares are forfeited, not redistributed. A true no-proposal event
 uses eligible stake, and ambiguous skipped events receive no synthetic credit.
 
@@ -271,12 +271,18 @@ upgrade, controller change, or neuron action requires a separate audit and
 explicit mainnet authorization.
 
 The two-year protected neuron is distinct from the Dynamic 14-day IO neuron.
-The Dynamic parent is claimed from its externally seeded deterministic memo-0
-Account before Ready, accepts canonical balance at or above 10 ICP, classifies
-excess as excluded surplus, uses an exact `1209600`-second non-dissolving delay,
-and follows the protected neuron. Ordinary eligible IO SNS neurons use the
+The Dynamic parent is claimed from its externally seeded deterministic Account
+at the configured `pooled_parent_memo` before Ready, accepts canonical balance at
+or above 10 ICP, classifies excess as excluded surplus, uses an exact
+`1209600`-second non-dissolving delay, and follows the protected neuron. Ordinary
+eligible IO SNS neurons use the
 separate `1296060`-second (15 days + 1 minute) delay. Structural synchronization
 does not wait for the daily reward event.
+
+Existing production configuration retains memo 0. Acceptance uses memo 1 because
+its permanent neuron already occupies the Manager's memo-0 staking Account.
+The permanent and Dynamic neurons must have distinct staking Accounts; this
+configuration correction does not change protocol economics.
 
 | Role | Identifier | Status |
 | --- | --- | --- |

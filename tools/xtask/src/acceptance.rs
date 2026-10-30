@@ -2,6 +2,8 @@ pub(crate) mod checkpoints;
 mod constructors;
 #[path = "../../acceptance/frontend_assets.rs"]
 mod frontend_assets;
+#[path = "../../acceptance/nns_parent.rs"]
+mod nns_parent;
 mod observations;
 use candid::Principal;
 use io_core_model::{Backing, EconomicState, ReconcilePlan};
@@ -253,6 +255,7 @@ fn account_json(
 }
 
 fn expected_accounts(root: &Path) -> Result<Value, String> {
+    let parent_memo = nns_parent::memo(root)?;
     let manifest = manifest(root)?;
     let acceptance_overlay = overlay(root, "acceptance")?;
     let inputs: Value = read_json(root, &format!("{DIR}/required-inputs.draft.json"))?;
@@ -474,9 +477,12 @@ fn expected_accounts(root: &Path) -> Result<Value, String> {
         account_json(
             "nns_dynamic_parent_stake",
             NNS_GOVERNANCE_PRINCIPAL,
-            Some(sns_neuron_subaccount(principal(nns, "NNS Manager")?, 0)),
+            Some(sns_neuron_subaccount(
+                principal(nns, "NNS Manager")?,
+                parent_memo,
+            )),
             "ICP",
-            "memo-0 Dynamic parent neuron",
+            &format!("memo-{parent_memo} Dynamic parent neuron"),
             json!(0),
             "10 ICP anchor plus claim backing",
             false,
@@ -1007,6 +1013,20 @@ fn validate_static_artifacts(root: &Path) -> Result<(), String> {
         return Err("genesis neuron manifest diverges from the locked three-neuron model".into());
     }
     let funding: Value = read_json(root, &format!("{DIR}/funding.draft.json"))?;
+    let dynamic_funding: Vec<_> = funding["funding_actions"]
+        .as_array()
+        .ok_or("funding actions must be an array")?
+        .iter()
+        .filter(|action| action["account"] == "nns_dynamic_parent_stake")
+        .collect();
+    if dynamic_funding.len() != 1
+        || dynamic_funding[0]["minimum_required_e8s"] != json!(DYNAMIC_ANCHOR_E8S)
+    {
+        return Err(
+            "funding must reference the derived Dynamic parent Account once with a 10 ICP anchor"
+                .into(),
+        );
+    }
     if funding["stream_claim_backing_target_e8s"] != "C0"
         || funding["additional_permanent_capital_transfer_e8s"] != "ceil(2 * C0 / 3)"
         || funding["dynamic_anchor_e8s"] != json!(DYNAMIC_ANCHOR_E8S)
@@ -1027,7 +1047,7 @@ fn validate_static_artifacts(root: &Path) -> Result<(), String> {
         || init["stream_manager"]["liquid_icp"]["subaccount_hex"]
             != hex::encode(STREAM_LIQUID_SUBACCOUNT)
         || init["nns_manager"]["two_year_neuron_id"] != json!(ACCEPTANCE_NEURON_ID)
-        || init["nns_manager"]["pooled_parent_memo"] != json!(0)
+        || init["nns_manager"]["pooled_parent_memo"] != json!(nns_parent::memo(root)?)
         || init["nns_manager"]["pooled_parent_followee_id"] != json!(ACCEPTANCE_NEURON_ID)
         || init["nns_manager"]["stream_manager"] != role(&manifest, "stream_manager")?
         || init["stream_manager"]["nonredeemable_governance_io_accounts"]
@@ -1918,6 +1938,23 @@ mod tests {
             "genesis-neurons.draft.json",
             "/neurons/1/memo",
             json!(JUPITER_GOVERNANCE_MEMO + 1),
+        );
+        for memo in [0_u64, 2, u64::MAX] {
+            mutate(
+                "io-init-configs.draft.json",
+                "/nns_manager/pooled_parent_memo",
+                json!(memo),
+            );
+        }
+        mutate(
+            "funding.draft.json",
+            "/funding_actions/2/account",
+            json!("nns_permanent_neuron_stake"),
+        );
+        mutate(
+            "funding.draft.json",
+            "/funding_actions/2/minimum_required_e8s",
+            json!(999_999_999),
         );
         mutate(
             "acceptance-accounts.draft.json",
