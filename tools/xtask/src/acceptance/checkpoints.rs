@@ -250,17 +250,8 @@ fn validate_parser_binding(binding: &Value, adapter: &[u8], binary: &[u8]) -> Re
     Ok(())
 }
 
-pub(crate) fn checkpoint_a(root: &Path, dir: &Path) -> Result<Value, String> {
-    super::validate(root)?;
-    let context = json_at(dir, "context.json")?;
-    validate_context(root, &context)?;
-    super::observations::permanent_baseline(dir, &context)?;
-    let io_artifacts = validate_io_artifacts(root, dir)?;
-    let expected_accounts = accounts(&context)?;
-    if json_at(dir, "accounts.json")? != expected_accounts {
-        return Err("complete Account identity or economic exclusion mismatch".into());
-    }
-    let baseline = json_at(dir, "baseline-canisters.json")?;
+// Acceptance admission policy only; not a production budget or uptime guarantee.
+fn validate_preinstall_baseline(context: &Value, baseline: &Value) -> Result<(), String> {
     for role in [
         "governance",
         "root",
@@ -273,7 +264,7 @@ pub(crate) fn checkpoint_a(root: &Path, dir: &Path) -> Result<Value, String> {
         "frontend",
     ] {
         principal(text(&baseline[role], "subnet_id")?, "baseline subnet")?;
-        if amount(&baseline[role], "cycles")? < 20_000_000_000_000 {
+        if amount(&baseline[role], "cycles")? < 3_000_000_000_000 {
             return Err(format!("insufficient pre-install cycles: {role}"));
         }
         if ["governance", "root", "ledger", "index", "swap"].contains(&role)
@@ -291,6 +282,21 @@ pub(crate) fn checkpoint_a(root: &Path, dir: &Path) -> Result<Value, String> {
             ));
         }
     }
+    Ok(())
+}
+
+pub(crate) fn checkpoint_a(root: &Path, dir: &Path) -> Result<Value, String> {
+    super::validate(root)?;
+    let context = json_at(dir, "context.json")?;
+    validate_context(root, &context)?;
+    super::observations::permanent_baseline(dir, &context)?;
+    let io_artifacts = validate_io_artifacts(root, dir)?;
+    let expected_accounts = accounts(&context)?;
+    if json_at(dir, "accounts.json")? != expected_accounts {
+        return Err("complete Account identity or economic exclusion mismatch".into());
+    }
+    let baseline = json_at(dir, "baseline-canisters.json")?;
+    validate_preinstall_baseline(&context, &baseline)?;
     let bundle = PathBuf::from(text(&context, "bundle_path")?);
     crate::sns_framework::validate_bundle(&bundle)?;
     let manifest = io_sns_manifest::SnsManifest::read(&bundle.join("manifest.toml"))?;
@@ -714,6 +720,67 @@ pub(crate) fn generate_constructors(root: &Path, dir: &Path) -> Result<(), Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn preinstall_baseline_accepts_three_trillion_and_rejects_one_cycle_less_per_role() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let manifest: AcceptanceManifest =
+            read_json(&root, &format!("{DIR}/acceptance-manifest.json")).unwrap();
+        let operator = "zkkkd-i34qc-367ln-e2u7o-ezznu-dkfqh-gtfvz-cviph-6qa4v-evtfs-wqe";
+        let subnet = Principal::from_slice(&[53; 29]).to_text();
+        let mut context = json!({"operator": operator});
+        let mut baseline = json!({});
+        for (name, frozen) in [
+            ("governance", "sns_governance"),
+            ("root", "sns_root"),
+            ("ledger", "sns_ledger"),
+            ("index", "sns_index"),
+            ("swap", "sns_swap"),
+            ("stream", "stream_manager"),
+            ("nns_manager", "nns_manager"),
+            ("historian", "historian"),
+            ("frontend", "frontend"),
+        ] {
+            let id = role(&manifest, frozen).unwrap();
+            context[name] = json!(id);
+            baseline[name] = json!({"canister_id": id, "controllers": [operator],
+                "module_hash": null, "subnet_id": subnet, "cycles": 3_000_000_000_000u64,
+                "reserved_cycles": 0, "reserved_cycles_limit": 5_000_000_000_000u64});
+        }
+        // Valid nine-role baseline, not a claim that all other checkpoint A evidence exists.
+        validate_preinstall_baseline(&context, &baseline).unwrap();
+        for name in baseline.as_object().unwrap().keys() {
+            let mut bad = baseline.clone();
+            bad[name]["cycles"] = json!(2_999_999_999_999u64);
+            // Neither reservation nor its ceiling can satisfy the main-balance gate.
+            bad[name]["reserved_cycles"] = json!(5_000_000_000_000u64);
+            assert_eq!(
+                validate_preinstall_baseline(&context, &bad).unwrap_err(),
+                format!("insufficient pre-install cycles: {name}")
+            );
+            for (field, replacement) in [
+                ("canister_id", json!(operator)),
+                ("controllers", json!([operator, subnet])),
+                ("module_hash", json!("00".repeat(32))),
+                ("subnet_id", json!("UNOBSERVED")),
+            ] {
+                let mut bad = baseline.clone();
+                bad[name][field] = replacement;
+                assert!(
+                    validate_preinstall_baseline(&context, &bad).is_err(),
+                    "{name}/{field}"
+                );
+            }
+            let mut missing = baseline.clone();
+            missing.as_object_mut().unwrap().remove(name);
+            assert!(validate_preinstall_baseline(&context, &missing).is_err());
+        }
+        for name in ["root", "ledger", "index", "swap"] {
+            let mut bad = baseline.clone();
+            bad[name]["subnet_id"] = json!(Principal::from_slice(&[54; 29]).to_text());
+            assert!(validate_preinstall_baseline(&context, &bad).is_err());
+        }
+    }
+
     #[test]
     fn acceptance_source_and_parser_require_the_reviewed_baseline() {
         let mut source = io_sns_manifest::SnsManifest::parse(&format!(
