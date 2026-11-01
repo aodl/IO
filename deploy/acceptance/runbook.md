@@ -20,15 +20,24 @@ inputs explicitly; stop on any mismatch or unresolved required stage input.
    lifecycle and canonical validation retain their original source bindings;
    documentation-only finalisation does not require repeating them.
 3. Establish checkpoint A: exact nine identities, compatible framework subnet,
-   empty modules, sole observed operator authority and at least 20T cycles each;
+   empty modules, sole observed operator authority and a reported main cycles
+   balance of at least 3T each;
    complete permanent NNS baseline and source-bound IO artifacts; canonical
    Accounts and typed five-component constructors. Root init registers exactly
    the four empty IO dapps. No late funding constants or C constructors are
    required at A.
    The installed bootstrap helper fails the empty-module requirement. Use only
    the separately authorized retirement procedure below; do not record a null
-   hash until genuinely observed. The 20T floor remains the current gate pending
-   an approved cycles-policy decision; do not lower it or fund to it by default.
+   hash until genuinely observed. The operator-approved 3T admission floor
+   replaces the former 20T policy.
+   It is not a technical installation minimum or a 30-day uptime guarantee.
+   Reserved cycles and the reserved-cycles limit do not satisfy this floor.
+   Passing admission does not establish sufficient executable headroom. Before
+   each authorized installation or other expensive live operation, assess the
+   actual freezing reserve, available execution balance, projected operation
+   cost and applicable resource reservations; replenish cycles if necessary.
+   Follow the manual funding and archive precautions in
+   [acceptance preflight](read-only-preflight.md#acceptance-cycles-monitoring-and-funding).
 4. Install Ledger, Index, Root, parked Swap and Governance from reviewed bytes.
    Governance is Normal at genesis, with a truthful standard six-component
    deployed_version, capacity 1000, zero native rewards and automatic target

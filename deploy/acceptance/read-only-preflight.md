@@ -58,8 +58,8 @@ does not introduce a new collector or dependency. Management status alone and
 PocketIC fixture subnet IDs do not prove live routing.
 
 Checkpoint A requires all nine IDs to exist, have empty module hashes, sole
-operator control and at least 20T cycles each; all five installed framework
-components must share a compatible subnet. An unexpected module/controller,
+operator control and a reported main cycles balance of at least 3T each; all five
+installed framework components must share a compatible subnet. An unexpected module/controller,
 inaccessible cycles value or incompatible subnet is a stop, not permission to
 empty, reinstall, move, top up or change a canister. The canisters are unobserved
 until this inspection completes. Retain subnet capabilities, release/interface
@@ -67,6 +67,103 @@ compatibility and the reviewed management `install_chunked_code` requirements.
 Chunk stores must be on the **target's subnet**. The accepted dapp path uploads
 to each empty target itself before handoff, then Governance/Root installs it.
 No upload/install test may run on these live targets during read-only preflight.
+
+### Acceptance cycles monitoring and funding
+
+The operator approved **3_000_000_000_000 reported main cycles per canister** as
+initial acceptance admission, superseding the former 20T gate. Temporary
+insufficient-cycle interruptions are accepted; production policy is unchanged. This is not a technical
+minimum or a measured 30-day active-load budget. Retain every other checkpoint A
+identity, controller, empty-module, subnet and evidence requirement. Historical
+observations and policy assessments retain their original dates and thresholds.
+
+The reported main balance is not necessarily all spendable or liquid. Passing
+this admission check does not prove enough executable headroom for installation.
+Before each future authorized installation or other expensive live operation,
+assess the actual freezing reserve, available execution balance, projected
+operation cost and applicable resource reservations; replenish cycles if needed.
+
+For each of the nine frozen targets, the later minimum admission top-up is
+`max(0, 3_000_000_000_000 - fresh_authenticated_main_cycles(target))`.
+The nine admission balances total 27T; historical balances are not current transfer
+amounts. Price any snapshot-to-verification execution/burn allowance explicitly in
+the separately approved funding tranche and verify the resulting balance. Reserved
+cycles are not transferable main balance; the 5T reserved limit is a ceiling, not
+funding. Canister cycles, ICP staking capital and the independent 10 ICP Dynamic
+anchor are separate budgets. No top-up is authorized by this document.
+
+**Ledger exception:** preserve the existing archive trigger of 2,000 retained
+blocks, 1,000-block archive batches, 1GiB maximum archive memory and **10T per
+archive creation**. A 3T Ledger cannot pay that allocation. Use its existing
+`get_transactions(record { start = 0 : nat; length = 0 : nat })` query to observe
+`log_length`, or `get_blocks` with zero-length arguments for `chain_length`.
+Before the first archive, this is also the local retained block count. Afterward,
+enumerate the existing `icrc3_get_archives(record { from = null })` ranges (and
+any further pages), verify contiguous archive coverage, and subtract archived
+blocks from total length. Do not use `first_index` from an empty zero-length
+reply: the pinned DID leaves it unspecified. Root's existing canister summary
+tracks archive identities; lifetime transaction count alone is not archive
+proximity after archiving. Ledger identity is the frozen SNS Ledger, not the
+canonical ICP Ledger; Index's synced
+count may lag and is not the authoritative archive-proximity measure.
+
+Before local retained blocks reach **1,500**, or before a planned workload could
+cross 2,000 before the next check, arrange a separately approved Ledger top-up.
+Require main balance of at least **10T + current freezing reserve + cost of the
+planned workload/next review interval + reviewed execution/recovery allowance**
+before permitting that workload. Replenish for another 10T allocation before any
+subsequent archive that needs a new archive canister; not every archive batch
+necessarily creates one. Do not infer a second allocation is covered by 3T.
+The 500-block warning margin assumes bounded operator-generated acceptance traffic;
+check before batches and stop generating load if funding cannot arrive in time.
+The retained memo-1 maintained lifecycle ended with seven indexed SNS Ledger
+blocks, far below 2,000; that bounded scenario does not itself predict an archive.
+A new stress/load exercise that reaches the trigger needs extra Ledger funding
+**before it starts**. No workload or archive configuration is changed here.
+
+During installation and active acceptance, the operator checks actual main balances,
+settings/freezing requirements, idle burn and measured balance deltas **daily**,
+and after installs/upgrades, archive creation or large workloads. Use existing
+native status/Root summary routes with agent verification; do not substitute
+unverified public values or repeat historic checks merely for packaging. Let `F`
+be current freezing reserve and `R` conservative observed consumption per day,
+including active work (the idle rate alone is not active burn). Warn/replenish if
+`B <= F + 3*R + next_planned_outgoing_cycles`; this allows one daily review plus
+two days to arrange payment. If `B <= F + R + next_planned_outgoing_cycles`, stop
+optional work and arrange same-day external funding. Unknown burn or growth calls
+for shorter checks and funding before the next costed operation, not a zero estimate.
+Preserve separate Ledger archive warnings above; these operating warnings do not
+change the 3T admission check or add an automated policy engine.
+
+After active acceptance, retain the permanent-neuron controller and functioning
+maintenance/control path. The operator remains accountable funder until a successor
+explicitly accepts responsibility. Review custody balances, burn, governance access
+and voting-power-refresh health **weekly**, with at least a 14-day response runway
+(`F + 14*R + planned outgoing cycles`) and earlier intervention for rising burn.
+3T is not one year of custody funding. Retain a funded governance proposal path;
+fully redeeming the sole 30 IO proposer can remove it. No canister deletion or
+neuron-policy change follows from the end of the active exercise.
+
+An external, operator-signed **cycles-ledger withdrawal to the exact canister**
+is the existing independent replenishment mechanism (pinned DFX 0.31.0 supports
+`dfx cycles top-up --network ic --identity APPROVED_EXISTING_OPERATOR_IDENTITY
+EXACT_CANISTER_ID APPROVED_CYCLES_AMOUNT`; this is inert syntax, not execution
+authority or a selected identity): the cycles ledger delivers
+cycles through management `deposit_cycles`, which does not require the recipient's
+Wasm or SNS Governance/Root/Manager application code to execute. It can replenish
+a frozen target without changing controllers. This confirms the protocol route,
+not possession of a funded operator cycles-ledger Account: actual provider,
+available external cycles and its fee must be confirmed before handoff, without
+credential inspection. A separately approved CMC ICP top-up is another external
+route if already used by the operator. No wallet proxy, new funding service or
+credential configuration is introduced here. See the official
+[cycles-ledger semantics](https://docs.internetcomputer.org/concepts/cycles/).
+
+Freezing from low balance can be recoverable while code/state still exist.
+Complete exhaustion can lead to automatic uninstall and loss of code and persistent
+state; topping up later does not restore monetary journals or stable state. It is
+not an acceptable harmless interruption or permission to reinstall. See
+[freezing and exhaustion](https://docs.internetcomputer.org/guides/canister-management/settings/).
 
 Prepare one record per role using the existing `baseline-canisters.json` shape:
 
