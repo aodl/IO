@@ -58,8 +58,8 @@ does not introduce a new collector or dependency. Management status alone and
 PocketIC fixture subnet IDs do not prove live routing.
 
 Checkpoint A requires all nine IDs to exist, have empty module hashes, sole
-operator control and at least 3T spendable main cycles each; all five installed framework
-components must share a compatible subnet. An unexpected module/controller,
+operator control and a reported main cycles balance of at least 3T each; all five
+installed framework components must share a compatible subnet. An unexpected module/controller,
 inaccessible cycles value or incompatible subnet is a stop, not permission to
 empty, reinstall, move, top up or change a canister. The canisters are unobserved
 until this inspection completes. Retain subnet capabilities, release/interface
@@ -70,12 +70,18 @@ No upload/install test may run on these live targets during read-only preflight.
 
 ### Acceptance cycles monitoring and funding
 
-The operator approved **3_000_000_000_000 main cycles per canister** as initial
-acceptance admission, superseding the former 20T gate. Temporary insufficient-cycle
-interruptions are accepted; production policy is unchanged. This is not a technical
+The operator approved **3_000_000_000_000 reported main cycles per canister** as
+initial acceptance admission, superseding the former 20T gate. Temporary
+insufficient-cycle interruptions are accepted; production policy is unchanged. This is not a technical
 minimum or a measured 30-day active-load budget. Retain every other checkpoint A
 identity, controller, empty-module, subnet and evidence requirement. Historical
 observations and policy assessments retain their original dates and thresholds.
+
+The reported main balance is not necessarily all spendable or liquid. Passing
+this admission check does not prove enough executable headroom for installation.
+Before each future authorized installation or other expensive live operation,
+assess the actual freezing reserve, available execution balance, projected
+operation cost and applicable resource reservations; replenish cycles if needed.
 
 For each of the nine frozen targets, the later minimum admission top-up is
 `max(0, 3_000_000_000_000 - fresh_authenticated_main_cycles(target))`.
